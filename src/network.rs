@@ -2,6 +2,7 @@ use crate::config;
 use crate::i2c_bus::I2cBus;
 use crate::sensors::Ds3231;
 use crate::state::NetworkWeather;
+use cyw43::{Aligned, A4, Cyw43439};
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_futures::select;
@@ -9,7 +10,7 @@ use embassy_net::udp::{PacketMetadata, UdpMetadata, UdpSocket};
 use embassy_rp::bind_interrupts;
 use embassy_rp::dma::InterruptHandler as DmaIrq;
 use embassy_rp::gpio::{Level, Output};
-use embassy_rp::peripherals::{DMA_CH0, PIO0};
+use embassy_rp::peripherals::{DMA_CH0, DMA_CH1, PIO0};
 use embassy_rp::pio::InterruptHandler as PioIrq;
 use embassy_rp::{dma::Channel, pio::Pio, Peri};
 use embassy_time::{Duration, Timer};
@@ -21,18 +22,29 @@ bind_interrupts!(struct PioIrqs {
 });
 
 bind_interrupts!(struct DmaIrqs {
-    DMA_IRQ_0 => DmaIrq<DMA_CH0>;
+    DMA_IRQ_0 => DmaIrq<DMA_CH0>, DmaIrq<DMA_CH1>;
+});
+
+static BTFW: Aligned<A4, [u8; 6164]> = Aligned({
+    const RAW: [u8; 6164] = *cyw43_firmware::CYW43_43439A0_BTFW;
+    RAW
 });
 
 pub async fn init_wifi(
     spawner: &Spawner,
     pio: Peri<'static, PIO0>,
-    dma: Peri<'static, DMA_CH0>,
+    dma0: Peri<'static, DMA_CH0>,
+    dma1: Peri<'static, DMA_CH1>,
     p23: Peri<'static, embassy_rp::peripherals::PIN_23>,
     p24: Peri<'static, embassy_rp::peripherals::PIN_24>,
     p25: Peri<'static, embassy_rp::peripherals::PIN_25>,
     p29: Peri<'static, embassy_rp::peripherals::PIN_29>,
-) -> (cyw43::Control<'static>, embassy_net::Stack<'static>, bool) {
+) -> (
+    cyw43::Control<'static>,
+    embassy_net::Stack<'static>,
+    bool,
+    Option<cyw43::bluetooth::BtDriver<'static>>,
+) {
     let fw = &cyw43_setup::FW;
     let clm = cyw43_setup::CLM;
     let nvram = &cyw43_setup::NVRAM;
@@ -41,7 +53,8 @@ pub async fn init_wifi(
     let cs = Output::new(p25, Level::High);
     let mut pio = Pio::new(pio, PioIrqs);
     let divider: u32 = (150_000_000 / 1_000_000) as u32;
-    let dma_ch = Channel::new(dma, DmaIrqs);
+    let dma_ch0 = Channel::new(dma0, DmaIrqs);
+    let dma_ch1 = Channel::new(dma1, DmaIrqs);
     let spi = cyw43_pio::PioSpi::new(
         &mut pio.common,
         pio.sm0,
@@ -50,12 +63,22 @@ pub async fn init_wifi(
         cs,
         p24,
         p29,
-        dma_ch,
+        dma_ch0,
+        dma_ch1,
     );
 
     static CYW43_STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = CYW43_STATE.init(cyw43::State::new());
-    let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw, nvram).await;
+
+    let (net_device, bt_device, mut control, runner) = if config::BLE_ENABLED {
+        let (net, bt, ctrl, run) =
+            cyw43::new_with_bluetooth(state, pwr, spi, fw, &BTFW, nvram).await;
+        (net, Some(bt), ctrl, run)
+    } else {
+        let (net, ctrl, run) = cyw43::new(state, pwr, spi, fw, nvram).await;
+        (net, None, ctrl, run)
+    };
+
     spawner.spawn(cyw43_task(runner).unwrap());
 
     control.init(clm).await;
@@ -79,7 +102,7 @@ pub async fn init_wifi(
     if !wifi_ok {
         warn!("WiFi 连接失败，基础功能不受影响");
     }
-    (control, stack, wifi_ok)
+    (control, stack, wifi_ok, bt_device)
 }
 
 /// 尝试连接 WiFi 并等待 DHCP（用于启动与断线重连）。
@@ -127,9 +150,10 @@ async fn cyw43_task(
     runner: cyw43::Runner<
         'static,
         cyw43::SpiBus<Output<'static>, cyw43_pio::PioSpi<'static, PIO0, 0>>,
+        Cyw43439,
     >,
-) {
-    runner.run().await;
+) -> ! {
+    runner.run().await
 }
 
 #[embassy_executor::task]

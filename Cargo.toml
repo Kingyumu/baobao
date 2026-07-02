@@ -11,9 +11,16 @@ embassy-rp = { version = "0.10.0", features = ["defmt", "unstable-pac", "time-dr
 embassy-sync = "0.8.0"
 embassy-futures = "0.1.2"
 
-# WiFi 驱动
-cyw43 = { version = "0.7.0", features = ["defmt", "firmware-logs"] }
+# WiFi / BLE 驱动
+cyw43 = { version = "0.7.0", features = ["defmt", "firmware-logs", "bluetooth"] }
 cyw43-pio = { version = "0.10.0" }
+cyw43-firmware = { version = "0.1", features = ["bluetooth"] }
+cyw43-setup = { version = "0.1", features = ["wifi", "bluetooth"] }
+
+# BLE 协议栈
+trouble-host = { version = "0.7.0", features = ["defmt", "peripheral", "gatt", "derive", "default-packet-pool-mtu-128"] }
+bt-hci = "0.9"
+portable-atomic = { version = "1.5", features = ["critical-section"] }
 
 # 网络栈
 embassy-net = { version = "0.9.1", features = ["defmt", "tcp", "udp", "dhcpv4", "dns"] }
@@ -31,9 +38,6 @@ heapless = "0.9"
 # 静态变量
 static_cell = "2"
 
-# WiFi 固件
-cyw43-setup = "0.1"
-
 # 数学库（用于 PIO 时钟分频、露点计算）
 fixed = "1"
 libm = "0.2"
@@ -47,6 +51,17 @@ panic-probe = { version = "1", features = ["print-defmt"] }
 
 # 内存分配器
 embedded-alloc = "0.7"
+
+[patch.crates-io]
+cyw43 = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+cyw43-pio = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-net = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
+embassy-net-driver-channel = { git = "https://github.com/embassy-rs/embassy.git", rev = "1d3c3de" }
 
 [profile.release]
 debug = 2

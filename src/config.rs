@@ -30,6 +30,11 @@ pub const PRESSURE_CHART_LEN: usize = 48;
 pub const WEATHER_ALERT_COOLDOWN: u64 = 3600;
 pub const WEATHER_ALERT_DURATION: u64 = 30;
 
+// BLE 广播室内传感器（手机 nRF Connect 等可连接读取/订阅）
+pub const BLE_ENABLED: bool = true;
+pub const BLE_DEVICE_NAME: &str = "BaobaoWeather";
+pub const BLE_NOTIFY_INTERVAL_SECS: u64 = 2;
+
 pub const BIRTHDAY_MONTH: u8 = 3;
 pub const BIRTHDAY_DAY: u8 = 15;
 pub const ANNIVERSARIES: &[(u8, u8, &str)] = &[

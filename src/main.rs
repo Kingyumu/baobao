@@ -6,6 +6,7 @@
 
 extern crate alloc;
 
+mod ble;
 mod buzzer;
 mod comfort;
 mod config;
@@ -16,6 +17,7 @@ mod render;
 mod sensors;
 mod state;
 
+use ble::publish_snapshot;
 use buzzer::{alert_beep, beep, hourly_chime, melody, melody_for_event, ALARM_MELODY};
 use defmt::*;
 use display::{draw_special_event, face_color, theme_for_hour, Face, FaceType, Ili9488Display};
@@ -36,6 +38,7 @@ use render::RenderCache;
 use sensors::{Bme280, DateTime, Ds3231};
 use state::SystemState;
 use static_cell::StaticCell;
+use trouble_host::prelude::ExternalController;
 use panic_probe as _;
 
 #[global_allocator]
@@ -78,14 +81,20 @@ async fn handle_special_event(
     cache.invalidate();
 }
 
+#[embassy_executor::task]
+async fn ble_host_task(bt_device: cyw43::bluetooth::BtDriver<'static>) {
+    let controller: ExternalController<_, 10> = ExternalController::new(bt_device);
+    ble::run(controller).await;
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     {
         use core::mem::MaybeUninit;
-        static mut HEAP_MEM: [MaybeUninit<u8>; 65536] = [MaybeUninit::uninit(); 65536];
+        static mut HEAP_MEM: [MaybeUninit<u8>; 131072] = [MaybeUninit::uninit(); 131072];
         #[allow(static_mut_refs)]
         unsafe {
-            HEAP.init(HEAP_MEM.as_mut_ptr() as usize, 65536);
+            HEAP.init(HEAP_MEM.as_mut_ptr() as usize, 131072);
         }
     }
 
@@ -131,16 +140,24 @@ async fn main(spawner: Spawner) {
     let mut buzzer = Output::new(p.PIN_6, Level::Low);
     let touch = Input::new(p.PIN_7, Pull::Down);
 
-    let (mut wifi_control, stack, wifi_connected) = init_wifi(
+    let (mut wifi_control, stack, wifi_connected, bt_device) = init_wifi(
         &spawner,
         p.PIO0,
         p.DMA_CH0,
+        p.DMA_CH1,
         p.PIN_23,
         p.PIN_24,
         p.PIN_25,
         p.PIN_29,
     )
     .await;
+
+    if config::BLE_ENABLED {
+        if let Some(bt) = bt_device {
+            spawner.spawn(ble_host_task(bt).unwrap());
+            info!("BLE 传感器广播已启动");
+        }
+    }
 
     let mut state = SystemState::new();
     let mut render_cache = RenderCache::new();
@@ -201,6 +218,9 @@ async fn main(spawner: Spawner) {
                 state.temperature = m.temperature;
                 state.humidity = m.humidity;
                 state.update_pressure(m.pressure);
+                if config::BLE_ENABLED {
+                    publish_snapshot(m.temperature, m.humidity, m.pressure);
+                }
             }
             Err(e) => warn!("BME280 读取失败: {:?}", e),
         }
