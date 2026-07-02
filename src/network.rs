@@ -75,7 +75,19 @@ pub async fn init_wifi(
     );
     spawner.spawn(net_task(runner).unwrap());
 
-    let mut wifi_ok = false;
+    let wifi_ok = connect_wifi(&mut control, stack).await;
+    if !wifi_ok {
+        warn!("WiFi 连接失败，基础功能不受影响");
+    }
+    (control, stack, wifi_ok)
+}
+
+/// 尝试连接 WiFi 并等待 DHCP（用于启动与断线重连）。
+pub async fn connect_wifi(
+    control: &mut cyw43::Control<'static>,
+    stack: embassy_net::Stack<'static>,
+) -> bool {
+    let mut joined = false;
     for _ in 0..3 {
         match control
             .join(
@@ -85,7 +97,7 @@ pub async fn init_wifi(
             .await
         {
             Ok(_) => {
-                wifi_ok = true;
+                joined = true;
                 break;
             }
             Err(err) => {
@@ -94,23 +106,20 @@ pub async fn init_wifi(
             }
         }
     }
-    if wifi_ok {
-        let deadline = embassy_time::Instant::now() + embassy_time::Duration::from_secs(10);
-        while !stack.is_config_up() {
-            if embassy_time::Instant::now() >= deadline {
-                warn!("DHCP 获取 IP 超时");
-                wifi_ok = false;
-                break;
-            }
-            Timer::after_millis(100).await;
+    if !joined {
+        return false;
+    }
+
+    let deadline = embassy_time::Instant::now() + embassy_time::Duration::from_secs(10);
+    while !stack.is_config_up() {
+        if embassy_time::Instant::now() >= deadline {
+            warn!("DHCP 获取 IP 超时");
+            return false;
         }
+        Timer::after_millis(100).await;
     }
-    if wifi_ok {
-        info!("WiFi 已连接");
-    } else {
-        warn!("WiFi 连接失败，基础功能不受影响");
-    }
-    (control, stack, wifi_ok)
+    info!("WiFi 已连接");
+    true
 }
 
 #[embassy_executor::task]
@@ -344,48 +353,93 @@ pub async fn fetch_weather(stack: embassy_net::Stack<'static>) -> Option<Network
 }
 
 fn parse_weather_json(json: &str) -> Option<NetworkWeather> {
-    let mut temp = 0.0f32;
-    let mut humidity = 0.0f32;
-    let mut ft = false;
-    let mut fh = false;
-    for line in json.split(',') {
-        let line = line.trim();
-        if line.starts_with("\"od22\"") {
-            if let Some(v) = line.split(':').nth(1) {
-                if let Ok(t) = v.trim_matches('"').trim().parse::<f32>() {
-                    temp = t;
-                    ft = true;
-                }
-            }
-        } else if line.starts_with("\"od27\"") {
-            if let Some(v) = line.split(':').nth(1) {
-                if let Ok(h) = v.trim_matches('"').trim().parse::<f32>() {
-                    humidity = h;
-                    fh = true;
-                }
-            }
-        }
+    let (hour, temp, humidity, precip) = parse_latest_observation(json)?;
+
+    let mut text = heapless::String::<32>::new();
+    let desc = weather_desc(temp, humidity, precip);
+    text.push_str(desc).ok();
+
+    let mut weather_code = heapless::String::<8>::new();
+    weather_code
+        .push_str(infer_weather_code(temp, humidity, precip, hour))
+        .ok();
+
+    Some(NetworkWeather {
+        temp,
+        humidity,
+        text,
+        weather_code,
+    })
+}
+
+/// 取 observe24h_data 中最新一条小时观测（od2 数组最后一项）。
+fn parse_latest_observation(json: &str) -> Option<(u8, f32, f32, f32)> {
+    let mut latest = None;
+    for segment in json.split("\"od21\"").skip(1) {
+        let hour = parse_od21_value(segment)?;
+        let temp = extract_f32_field(segment, "od22")?;
+        let precip = extract_f32_field(segment, "od26").unwrap_or(0.0);
+        let humidity = extract_f32_field(segment, "od27")?;
+        latest = Some((hour, temp, humidity, precip));
     }
-    if ft && fh {
-        let mut text = heapless::String::<32>::new();
-        let desc = if humidity >= 90.0 {
-            "雨"
-        } else if humidity >= 80.0 {
-            "阴"
-        } else if humidity >= 60.0 {
-            "多云"
-        } else if temp > 35.0 {
-            "晴热"
-        } else {
-            "晴"
-        };
-        text.push_str(desc).ok();
-        Some(NetworkWeather {
-            temp,
-            humidity,
-            text,
-        })
+    latest
+}
+
+fn parse_od21_value(segment: &str) -> Option<u8> {
+    let rest = segment.trim().trim_start_matches(':').trim();
+    let raw = rest.trim_start_matches('"').split('"').next()?.trim();
+    raw.parse().ok()
+}
+
+fn extract_f32_field(block: &str, key: &str) -> Option<f32> {
+    let pattern = alloc::format!("\"{}\":", key);
+    let rest = block.split(&pattern).nth(1)?;
+    let raw = rest
+        .trim()
+        .trim_start_matches('"')
+        .split(['"', ',', '}'])
+        .next()?
+        .trim();
+    raw.parse().ok()
+}
+
+fn weather_desc(temp: f32, humidity: f32, precip: f32) -> &'static str {
+    if precip >= 2.0 || (precip > 0.0 && humidity >= 90.0) {
+        "中雨"
+    } else if precip > 0.0 || humidity >= 92.0 {
+        "小雨"
+    } else if humidity >= 85.0 {
+        "阴"
+    } else if humidity >= 75.0 {
+        "多云"
+    } else if humidity >= 60.0 {
+        "多云"
+    } else if temp > 35.0 {
+        "晴热"
     } else {
-        None
+        "晴"
+    }
+}
+
+/// 根据温湿度与降水量推断天气图标码（d01~d17 / n01）。
+fn infer_weather_code(temp: f32, humidity: f32, precip: f32, hour: u8) -> &'static str {
+    if precip >= 2.0 {
+        "d08"
+    } else if precip > 0.0 || humidity >= 92.0 {
+        "d07"
+    } else if humidity >= 85.0 {
+        "d04"
+    } else if humidity >= 75.0 {
+        "d03"
+    } else if humidity >= 60.0 {
+        "d02"
+    } else if temp <= 2.0 {
+        "d13"
+    } else if temp > 35.0 {
+        "d01"
+    } else if hour >= 18 || hour < 6 {
+        "n01"
+    } else {
+        "d01"
     }
 }

@@ -13,6 +13,7 @@ pub struct NetworkWeather {
     pub temp: f32,
     pub humidity: f32,
     pub text: heapless::String<32>,
+    pub weather_code: heapless::String<8>,
 }
 
 pub struct SystemState {
@@ -142,5 +143,10 @@ impl SystemState {
             PressureTrend::Rising if self.pressure > 1013.0 => "trend_sun",
             _ => self.weather_code.as_str(),
         }
+    }
+
+    pub fn set_weather_code(&mut self, code: &str) {
+        self.weather_code.clear();
+        let _ = self.weather_code.push_str(code);
     }
 }

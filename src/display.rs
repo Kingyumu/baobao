@@ -481,6 +481,7 @@ pub fn draw_weather_panel(
     code: &str,
     trend: &str,
     net_weather: Option<&NetworkWeather>,
+    wifi_connected: bool,
 ) {
     let x = 310i32;
     let mut y = 20i32;
@@ -506,7 +507,12 @@ pub fn draw_weather_panel(
         .draw(d)
         .ok();
     y += 10;
-    if let Some(net) = net_weather {
+    let outdoor = if wifi_connected {
+        net_weather
+    } else {
+        None
+    };
+    if let Some(net) = outdoor {
         Text::new(
             &alloc::format!("室外 {:.1}°C", net.temp),
             Point::new(x, y),
@@ -522,6 +528,15 @@ pub fn draw_weather_panel(
         )
         .draw(d)
         .ok();
+        y += 20;
+        Text::new(&temp_diff_text(temp, net.temp), Point::new(x, y), small)
+            .draw(d)
+            .ok();
+        y += 20;
+    } else if !wifi_connected {
+        Text::new("离线 · 仅室内数据", Point::new(x, y), small)
+            .draw(d)
+            .ok();
         y += 20;
     }
     Text::new(
@@ -543,6 +558,17 @@ pub fn draw_weather_panel(
     Text::new(trend, Point::new(x + 20, y), small)
         .draw(d)
         .ok();
+}
+
+fn temp_diff_text(indoor: f32, outdoor: f32) -> alloc::string::String {
+    let diff = indoor - outdoor;
+    if diff.abs() < 0.5 {
+        alloc::format!("室内外温差 持平")
+    } else if diff > 0.0 {
+        alloc::format!("室内比室外暖 {:.1}°C", diff)
+    } else {
+        alloc::format!("室内比室外凉 {:.1}°C", -diff)
+    }
 }
 
 pub fn draw_wifi_icon(d: &mut Ili9488Display, connected: bool) {

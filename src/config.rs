@@ -7,6 +7,7 @@ pub const NTP_SERVER: &str = "ntp.ntsc.ac.cn";
 pub const DISPLAY_UPDATE_INTERVAL: u64 = 1;
 pub const WEATHER_UPDATE_INTERVAL: u64 = 1800;
 pub const NTP_SYNC_INTERVAL: u64 = 3600;
+pub const WIFI_RECONNECT_INTERVAL: u64 = 60;
 pub const BIRTHDAY_MONTH: u8 = 3;
 pub const BIRTHDAY_DAY: u8 = 15;
 pub const ANNIVERSARIES: &[(u8, u8, &str)] = &[

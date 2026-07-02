@@ -12,7 +12,7 @@ use embedded_graphics::{
 };
 
 const CLOCK_REGION: (u16, u16, u16, u16) = (0, 0, 300, 265);
-const WEATHER_REGION: (u16, u16, u16, u16) = (300, 0, 175, 220);
+const WEATHER_REGION: (u16, u16, u16, u16) = (300, 0, 175, 235);
 const FACE_REGION: (u16, u16, u16, u16) = (375, 210, 40, 50);
 const WIFI_REGION: (u16, u16, u16, u16) = (425, 0, 55, 45);
 const DATE_REGION: (u16, u16, u16, u16) = (0, 292, 480, 28);
@@ -40,6 +40,7 @@ pub struct RenderCache {
     trend: heapless::String<16>,
     outdoor_temp: Option<f32>,
     outdoor_text: heapless::String<32>,
+    outdoor_code: heapless::String<8>,
     wifi: bool,
     display_code: heapless::String<16>,
 }
@@ -61,6 +62,7 @@ impl RenderCache {
             trend: heapless::String::new(),
             outdoor_temp: None,
             outdoor_text: heapless::String::new(),
+            outdoor_code: heapless::String::new(),
             wifi: false,
             display_code: heapless::String::new(),
         }
@@ -97,6 +99,7 @@ impl RenderCache {
                 code,
                 state.trend_text(),
                 state.network_weather.as_ref(),
+                state.wifi_connected,
             );
             draw_wifi_icon(display, state.wifi_connected);
             self.draw_face(display, state, ft, code);
@@ -111,7 +114,7 @@ impl RenderCache {
             draw_clock(display, time);
         }
 
-        if self.weather_changed(state, code) {
+        if self.weather_changed(state, code) || self.wifi != state.wifi_connected {
             fill_region(display, WEATHER_REGION);
             draw_weather_panel(
                 display,
@@ -121,6 +124,7 @@ impl RenderCache {
                 code,
                 state.trend_text(),
                 state.network_weather.as_ref(),
+                state.wifi_connected,
             );
         }
 
@@ -205,7 +209,9 @@ impl RenderCache {
         match (self.outdoor_temp, net) {
             (None, None) => false,
             (Some(a), Some(b)) => {
-                f32_changed(a, b.temp) || self.outdoor_text.as_str() != b.text.as_str()
+                f32_changed(a, b.temp)
+                    || self.outdoor_text.as_str() != b.text.as_str()
+                    || self.outdoor_code.as_str() != b.weather_code.as_str()
             }
             _ => true,
         }
@@ -232,6 +238,10 @@ impl RenderCache {
         self.outdoor_text.clear();
         if let Some(w) = state.network_weather.as_ref() {
             let _ = self.outdoor_text.push_str(w.text.as_str());
+            self.outdoor_code.clear();
+            let _ = self.outdoor_code.push_str(w.weather_code.as_str());
+        } else {
+            self.outdoor_code.clear();
         }
     }
 }

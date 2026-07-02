@@ -30,7 +30,7 @@ use embedded_graphics::{
     text::Text,
 };
 use i2c_bus::{I2cBus, I2cIrqs};
-use network::{fetch_weather, init_wifi, sync_ntp};
+use network::{connect_wifi, fetch_weather, init_wifi, sync_ntp};
 use render::RenderCache;
 use sensors::{Bme280, DateTime, Ds3231};
 use state::SystemState;
@@ -130,7 +130,7 @@ async fn main(spawner: Spawner) {
     let mut buzzer = Output::new(p.PIN_6, Level::Low);
     let touch = Input::new(p.PIN_7, Pull::Down);
 
-    let (_control, stack, wifi_ok) = init_wifi(
+    let (mut wifi_control, stack, wifi_connected) = init_wifi(
         &spawner,
         p.PIO0,
         p.DMA_CH0,
@@ -143,10 +143,26 @@ async fn main(spawner: Spawner) {
 
     let mut state = SystemState::new();
     let mut render_cache = RenderCache::new();
-    state.wifi_connected = wifi_ok;
+    state.wifi_connected = wifi_connected;
 
-    if wifi_ok && sync_ntp(stack, &rtc, bus).await {
+    if wifi_connected && sync_ntp(stack, &rtc, bus).await {
         state.last_ntp_sync = 0;
+    }
+
+    if wifi_connected {
+        match fetch_weather(stack).await {
+            Some(w) => {
+                info!(
+                    "天气: {}°C {} [{}]",
+                    w.temp,
+                    w.text.as_str(),
+                    w.weather_code.as_str()
+                );
+                state.set_weather_code(w.weather_code.as_str());
+                state.network_weather = Some(w);
+            }
+            None => warn!("首次天气获取失败"),
+        }
     }
 
     Timer::after_secs(1).await;
@@ -156,11 +172,25 @@ async fn main(spawner: Spawner) {
     beep(&mut buzzer, 100).await;
 
     let mut touch_pressed = false;
+    let mut last_wifi_reconnect = 0u64;
 
     loop {
         let loop_start = embassy_time::Instant::now().as_secs();
 
-        state.wifi_connected = wifi_ok && stack.is_config_up();
+        let link_up = stack.is_config_up();
+        state.wifi_connected = link_up;
+        if !link_up {
+            if loop_start.saturating_sub(last_wifi_reconnect) >= config::WIFI_RECONNECT_INTERVAL {
+                last_wifi_reconnect = loop_start;
+                info!("WiFi 断开，尝试重连...");
+                if connect_wifi(&mut wifi_control, stack).await {
+                    state.wifi_connected = true;
+                    state.last_ntp_sync = 0;
+                    state.last_weather_update = 0;
+                    render_cache.invalidate();
+                }
+            }
+        }
 
         match bme.measure(bus).await {
             Ok(m) => {
@@ -193,7 +223,13 @@ async fn main(spawner: Spawner) {
         {
             match fetch_weather(stack).await {
                 Some(w) => {
-                    info!("天气: {}°C {}", w.temp, w.text);
+                    info!(
+                        "天气: {}°C {} [{}]",
+                        w.temp,
+                        w.text.as_str(),
+                        w.weather_code.as_str()
+                    );
+                    state.set_weather_code(w.weather_code.as_str());
                     state.network_weather = Some(w);
                     state.last_weather_update = loop_start;
                 }
