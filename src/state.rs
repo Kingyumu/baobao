@@ -8,6 +8,31 @@ pub enum PressureTrend {
     Falling,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DisplayPage {
+    Main,
+    Detail,
+    Compare,
+}
+
+impl DisplayPage {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Main => Self::Detail,
+            Self::Detail => Self::Compare,
+            Self::Compare => Self::Main,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Main => "主页",
+            Self::Detail => "详情",
+            Self::Compare => "对比",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NetworkWeather {
     pub temp: f32,
@@ -33,6 +58,7 @@ pub struct SystemState {
     pub special_event_handled: Option<(u8, u8)>,
     pub last_weather_update: u64,
     pub last_ntp_sync: u64,
+    pub display_page: DisplayPage,
 }
 
 impl SystemState {
@@ -56,6 +82,7 @@ impl SystemState {
             special_event_handled: None,
             last_weather_update: 0,
             last_ntp_sync: 0,
+            display_page: DisplayPage::Main,
         }
     }
 
@@ -148,5 +175,9 @@ impl SystemState {
     pub fn set_weather_code(&mut self, code: &str) {
         self.weather_code.clear();
         let _ = self.weather_code.push_str(code);
+    }
+
+    pub fn next_page(&mut self) {
+        self.display_page = self.display_page.next();
     }
 }

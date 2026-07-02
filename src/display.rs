@@ -1,5 +1,7 @@
+use crate::comfort::{comfort_label, dew_point};
+use crate::config;
 use crate::sensors::DateTime;
-use crate::state::{NetworkWeather, PressureTrend};
+use crate::state::{DisplayPage, NetworkWeather, SystemState};
 use embassy_rp::gpio::Output;
 use embassy_rp::peripherals::SPI1;
 use embassy_rp::spi::{Blocking as SpiBlocking, Spi};
@@ -11,7 +13,40 @@ use embedded_graphics::{
     text::Text,
 };
 
+use crate::state::PressureTrend;
+
 pub const BG_COLOR: Rgb565 = Rgb565::new(0, 0, 17);
+
+pub struct Theme {
+    pub bg: Rgb565,
+    pub title: Rgb565,
+    pub text: Rgb565,
+    pub dim: Rgb565,
+    pub accent: Rgb565,
+    pub is_night: bool,
+}
+
+pub fn theme_for_hour(hour: u8) -> Theme {
+    if hour >= config::NIGHT_START_HOUR || hour < config::NIGHT_END_HOUR {
+        Theme {
+            bg: Rgb565::new(0, 0, 8),
+            title: Rgb565::new(160, 160, 0),
+            text: Rgb565::new(170, 170, 190),
+            dim: Rgb565::new(90, 90, 110),
+            accent: Rgb565::new(110, 110, 130),
+            is_night: true,
+        }
+    } else {
+        Theme {
+            bg: BG_COLOR,
+            title: Rgb565::YELLOW,
+            text: Rgb565::WHITE,
+            dim: Rgb565::new(200, 200, 200),
+            accent: Rgb565::new(150, 150, 150),
+            is_night: false,
+        }
+    }
+}
 
 pub struct Ili9488Display {
     spi: Spi<'static, SPI1, SpiBlocking>,
@@ -409,22 +444,22 @@ const CX: i32 = 150;
 const CY: i32 = 145;
 const CR: i32 = 120;
 
-pub fn draw_clock(d: &mut Ili9488Display, t: &DateTime) {
+pub fn draw_clock(d: &mut Ili9488Display, t: &DateTime, theme: &Theme) {
     Circle::new(Point::new(CX - CR, CY - CR), (CR * 2) as u32)
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 3))
+        .into_styled(PrimitiveStyle::with_stroke(theme.text, 3))
         .draw(d)
         .ok();
     Circle::new(Point::new(CX - CR + 5, CY - CR + 5), ((CR - 5) * 2) as u32)
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(200, 200, 200), 1))
+        .into_styled(PrimitiveStyle::with_stroke(theme.dim, 1))
         .draw(d)
         .ok();
-    let ts = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
+    let ts = MonoTextStyle::new(&FONT_10X20, theme.text);
     let labels = ["12", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"];
     for i in 0..12usize {
         let outer = hand_end(CX, CY, CR - 8, i * 5);
         let inner = hand_end(CX, CY, CR - 22, i * 5);
         Line::new(inner, outer)
-            .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 3))
+            .into_styled(PrimitiveStyle::with_stroke(theme.text, 3))
             .draw(d)
             .ok();
         let lp = hand_end(CX, CY, CR - 38, i * 5);
@@ -436,10 +471,7 @@ pub fn draw_clock(d: &mut Ili9488Display, t: &DateTime) {
     for i in 0..60usize {
         if i % 5 != 0 {
             Line::new(hand_end(CX, CY, CR - 15, i), hand_end(CX, CY, CR - 8, i))
-                .into_styled(PrimitiveStyle::with_stroke(
-                    Rgb565::new(150, 150, 150),
-                    1,
-                ))
+                .into_styled(PrimitiveStyle::with_stroke(theme.accent, 1))
                 .draw(d)
                 .ok();
         }
@@ -448,11 +480,11 @@ pub fn draw_clock(d: &mut Ili9488Display, t: &DateTime) {
     let min = t.minute as usize;
     let hi = ((t.hour % 12) as usize) * 5 + min / 12;
     Line::new(Point::new(CX, CY), hand_end(CX, CY, 65, hi))
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 4))
+        .into_styled(PrimitiveStyle::with_stroke(theme.text, 4))
         .draw(d)
         .ok();
     Line::new(Point::new(CX, CY), hand_end(CX, CY, 90, min))
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 2))
+        .into_styled(PrimitiveStyle::with_stroke(theme.text, 2))
         .draw(d)
         .ok();
     Line::new(Point::new(CX, CY), hand_end(CX, CY, 100, sec))
@@ -465,7 +497,7 @@ pub fn draw_clock(d: &mut Ili9488Display, t: &DateTime) {
         .ok();
     let ds = MonoTextStyleBuilder::new()
         .font(&FONT_10X20)
-        .text_color(Rgb565::WHITE)
+        .text_color(theme.text)
         .build();
     let s = alloc::format!("{:02}:{:02}:{:02}", t.hour, t.minute, t.second);
     Text::new(&s, Point::new(CX - 35, CY + 100), ds)
@@ -482,20 +514,21 @@ pub fn draw_weather_panel(
     trend: &str,
     net_weather: Option<&NetworkWeather>,
     wifi_connected: bool,
+    theme: &Theme,
 ) {
     let x = 310i32;
     let mut y = 20i32;
     let title = MonoTextStyleBuilder::new()
         .font(&FONT_10X20)
-        .text_color(Rgb565::YELLOW)
+        .text_color(theme.title)
         .build();
     let txt = MonoTextStyleBuilder::new()
         .font(&FONT_10X20)
-        .text_color(Rgb565::WHITE)
+        .text_color(theme.text)
         .build();
     let small = MonoTextStyleBuilder::new()
         .font(&FONT_6X10)
-        .text_color(Rgb565::new(200, 200, 200))
+        .text_color(theme.dim)
         .build();
     let icon = weather_emoji(code);
     Text::new(&alloc::format!("{} 天气", icon), Point::new(x, y), title)
@@ -503,7 +536,7 @@ pub fn draw_weather_panel(
         .ok();
     y += 30;
     Line::new(Point::new(x, y), Point::new(x + 150, y))
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(100, 100, 100), 1))
+        .into_styled(PrimitiveStyle::with_stroke(theme.accent, 1))
         .draw(d)
         .ok();
     y += 10;
@@ -571,12 +604,16 @@ fn temp_diff_text(indoor: f32, outdoor: f32) -> alloc::string::String {
     }
 }
 
-pub fn draw_wifi_icon(d: &mut Ili9488Display, connected: bool) {
+pub fn draw_wifi_icon(d: &mut Ili9488Display, connected: bool, theme: &Theme) {
     let (x, y) = (440i32, 10i32);
     let c = if connected {
-        Rgb565::GREEN
+        if theme.is_night {
+            Rgb565::new(0, 120, 0)
+        } else {
+            Rgb565::GREEN
+        }
     } else {
-        Rgb565::new(150, 150, 150)
+        theme.accent
     };
     Circle::new(Point::new(x + 6, y + 12), 4)
         .into_styled(PrimitiveStyle::with_fill(c))
@@ -603,10 +640,10 @@ pub fn draw_wifi_icon(d: &mut Ili9488Display, connected: bool) {
     .ok();
 }
 
-pub fn draw_date(d: &mut Ili9488Display, t: &DateTime) {
+pub fn draw_date(d: &mut Ili9488Display, t: &DateTime, theme: &Theme) {
     let s = MonoTextStyleBuilder::new()
         .font(&FONT_6X10)
-        .text_color(Rgb565::new(200, 200, 200))
+        .text_color(theme.dim)
         .build();
     let wd = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
     let ds = alloc::format!(
@@ -630,4 +667,161 @@ pub fn draw_special_event(d: &mut Ili9488Display, message: &str) {
         .draw(d)
         .ok();
     Text::new(message, Point::new(160, 160), big).draw(d).ok();
+}
+
+pub fn draw_page_indicator(d: &mut Ili9488Display, page: DisplayPage, theme: &Theme) {
+    let s = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(theme.dim)
+        .build();
+    let hint = alloc::format!("[{}] 轻触切换 长按爱心", page.label());
+    Text::new(&hint, Point::new(8, 310), s).draw(d).ok();
+}
+
+pub fn draw_detail_page(d: &mut Ili9488Display, state: &SystemState, theme: &Theme) {
+    let title = MonoTextStyleBuilder::new()
+        .font(&FONT_10X20)
+        .text_color(theme.title)
+        .build();
+    let txt = MonoTextStyleBuilder::new()
+        .font(&FONT_10X20)
+        .text_color(theme.text)
+        .build();
+    let small = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(theme.dim)
+        .build();
+
+    Text::new("环境详情", Point::new(170, 30), title).draw(d).ok();
+
+    let dp = dew_point(state.temperature, state.humidity);
+    let comfort = comfort_label(state.temperature, state.humidity);
+    let mut y = 70i32;
+
+    Text::new(
+        &alloc::format!("舒适度  {}", comfort),
+        Point::new(40, y),
+        txt,
+    )
+    .draw(d)
+    .ok();
+    y += 35;
+    Text::new(
+        &alloc::format!("露点    {:.1}°C", dp),
+        Point::new(40, y),
+        txt,
+    )
+    .draw(d)
+    .ok();
+    y += 35;
+    Text::new(
+        &alloc::format!("温度    {:.1}°C", state.temperature),
+        Point::new(40, y),
+        txt,
+    )
+    .draw(d)
+    .ok();
+    y += 35;
+    Text::new(
+        &alloc::format!("湿度    {:.0}%", state.humidity),
+        Point::new(40, y),
+        txt,
+    )
+    .draw(d)
+    .ok();
+    y += 35;
+    Text::new(
+        &alloc::format!("气压    {:.0} hPa", state.pressure),
+        Point::new(40, y),
+        txt,
+    )
+    .draw(d)
+    .ok();
+    y += 35;
+    Text::new(
+        &alloc::format!("趋势    {}", state.trend_text()),
+        Point::new(40, y),
+        txt,
+    )
+    .draw(d)
+    .ok();
+    y += 35;
+    Text::new(
+        if theme.is_night {
+            "夜间模式  已开启"
+        } else {
+            "日间模式"
+        },
+        Point::new(40, y),
+        small,
+    )
+    .draw(d)
+    .ok();
+}
+
+pub fn draw_compare_page(d: &mut Ili9488Display, state: &SystemState, theme: &Theme) {
+    let title = MonoTextStyleBuilder::new()
+        .font(&FONT_10X20)
+        .text_color(theme.title)
+        .build();
+    let txt = MonoTextStyleBuilder::new()
+        .font(&FONT_10X20)
+        .text_color(theme.text)
+        .build();
+    let small = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(theme.dim)
+        .build();
+
+    Text::new("室内外对比", Point::new(150, 30), title).draw(d).ok();
+
+    Text::new(
+        &alloc::format!(
+            "室内  {:.1}°C    湿度 {:.0}%",
+            state.temperature,
+            state.humidity
+        ),
+        Point::new(40, 90),
+        txt,
+    )
+    .draw(d)
+    .ok();
+
+    if state.wifi_connected {
+        if let Some(net) = state.network_weather.as_ref() {
+            Text::new(
+                &alloc::format!(
+                    "室外  {:.1}°C    湿度 {:.0}%",
+                    net.temp,
+                    net.humidity
+                ),
+                Point::new(40, 130),
+                txt,
+            )
+            .draw(d)
+            .ok();
+            Text::new(
+                &temp_diff_text(state.temperature, net.temp),
+                Point::new(40, 175),
+                txt,
+            )
+            .draw(d)
+            .ok();
+            Text::new(
+                &alloc::format!("室外天气  {}", net.text.as_str()),
+                Point::new(40, 220),
+                small,
+            )
+            .draw(d)
+            .ok();
+        } else {
+            Text::new("室外数据加载中...", Point::new(40, 130), small)
+                .draw(d)
+                .ok();
+        }
+    } else {
+        Text::new("WiFi 未连接，暂无室外数据", Point::new(40, 130), small)
+            .draw(d)
+            .ok();
+    }
 }

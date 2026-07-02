@@ -1,9 +1,10 @@
 use crate::display::{
-    draw_clock, draw_date, draw_weather_panel, draw_wifi_icon, face_color, select_face, Face,
-    FaceType, BG_COLOR, Ili9488Display,
+    draw_clock, draw_compare_page, draw_date, draw_detail_page, draw_page_indicator,
+    draw_weather_panel, draw_wifi_icon, face_color, select_face, theme_for_hour, Face,
+    FaceType, Theme, Ili9488Display,
 };
 use crate::sensors::DateTime;
-use crate::state::{NetworkWeather, SystemState};
+use crate::state::{DisplayPage, NetworkWeather, SystemState};
 use embedded_graphics::{
     mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
     pixelcolor::Rgb565,
@@ -17,8 +18,8 @@ const FACE_REGION: (u16, u16, u16, u16) = (375, 210, 40, 50);
 const WIFI_REGION: (u16, u16, u16, u16) = (425, 0, 55, 45);
 const DATE_REGION: (u16, u16, u16, u16) = (0, 292, 480, 28);
 
-fn fill_region(d: &mut Ili9488Display, (x, y, w, h): (u16, u16, u16, u16)) {
-    d.fill_rect(x, y, w, h, BG_COLOR.into_storage());
+fn fill_region(d: &mut Ili9488Display, (x, y, w, h): (u16, u16, u16, u16), bg: Rgb565) {
+    d.fill_rect(x, y, w, h, bg.into_storage());
 }
 
 fn f32_changed(a: f32, b: f32) -> bool {
@@ -27,6 +28,8 @@ fn f32_changed(a: f32, b: f32) -> bool {
 
 pub struct RenderCache {
     ready: bool,
+    page: DisplayPage,
+    night: bool,
     second: u8,
     minute: u8,
     hour: u8,
@@ -49,6 +52,8 @@ impl RenderCache {
     pub fn new() -> Self {
         Self {
             ready: false,
+            page: DisplayPage::Main,
+            night: false,
             second: 255,
             minute: 255,
             hour: 255,
@@ -78,7 +83,24 @@ impl RenderCache {
         state: &SystemState,
         time: &DateTime,
     ) {
+        let theme = theme_for_hour(time.hour);
         let code = state.display_code();
+
+        if state.display_page != DisplayPage::Main {
+            display.clear(theme.bg);
+            match state.display_page {
+                DisplayPage::Detail => draw_detail_page(display, state, &theme),
+                DisplayPage::Compare => draw_compare_page(display, state, &theme),
+                DisplayPage::Main => {}
+            }
+            draw_wifi_icon(display, state.wifi_connected, &theme);
+            draw_date(display, time, &theme);
+            draw_page_indicator(display, state.display_page, &theme);
+            self.sync(state, time, code, &theme);
+            self.ready = true;
+            return;
+        }
+
         let ft = select_face(
             state.temperature,
             code,
@@ -88,9 +110,12 @@ impl RenderCache {
             state.pressure_filled,
         );
 
-        if !self.ready {
-            display.clear(BG_COLOR);
-            draw_clock(display, time);
+        let layout_changed =
+            !self.ready || self.page != state.display_page || self.night != theme.is_night;
+
+        if layout_changed {
+            display.clear(theme.bg);
+            draw_clock(display, time, &theme);
             draw_weather_panel(
                 display,
                 state.temperature,
@@ -100,22 +125,24 @@ impl RenderCache {
                 state.trend_text(),
                 state.network_weather.as_ref(),
                 state.wifi_connected,
+                &theme,
             );
-            draw_wifi_icon(display, state.wifi_connected);
-            self.draw_face(display, state, ft, code);
-            draw_date(display, time);
-            self.sync(state, time, code);
+            draw_wifi_icon(display, state.wifi_connected, &theme);
+            self.draw_face(display, state, ft, code, &theme);
+            draw_date(display, time, &theme);
+            draw_page_indicator(display, state.display_page, &theme);
+            self.sync(state, time, code, &theme);
             self.ready = true;
             return;
         }
 
         if self.clock_changed(time) {
-            fill_region(display, CLOCK_REGION);
-            draw_clock(display, time);
+            fill_region(display, CLOCK_REGION, theme.bg);
+            draw_clock(display, time, &theme);
         }
 
         if self.weather_changed(state, code) || self.wifi != state.wifi_connected {
-            fill_region(display, WEATHER_REGION);
+            fill_region(display, WEATHER_REGION, theme.bg);
             draw_weather_panel(
                 display,
                 state.temperature,
@@ -125,23 +152,24 @@ impl RenderCache {
                 state.trend_text(),
                 state.network_weather.as_ref(),
                 state.wifi_connected,
+                &theme,
             );
         }
 
         if self.wifi != state.wifi_connected {
-            fill_region(display, WIFI_REGION);
-            draw_wifi_icon(display, state.wifi_connected);
+            fill_region(display, WIFI_REGION, theme.bg);
+            draw_wifi_icon(display, state.wifi_connected, &theme);
         }
 
         if self.date_changed(time) {
-            fill_region(display, DATE_REGION);
-            draw_date(display, time);
+            fill_region(display, DATE_REGION, theme.bg);
+            draw_date(display, time, &theme);
         }
 
-        fill_region(display, FACE_REGION);
-        self.draw_face(display, state, ft, code);
+        fill_region(display, FACE_REGION, theme.bg);
+        self.draw_face(display, state, ft, code, &theme);
 
-        self.sync(state, time, code);
+        self.sync(state, time, code, &theme);
     }
 
     fn draw_face(
@@ -150,6 +178,7 @@ impl RenderCache {
         state: &SystemState,
         ft: FaceType,
         code: &str,
+        theme: &Theme,
     ) {
         let mut face = Face::new(ft);
         if state.animation_counter % 2 == 0 {
@@ -158,7 +187,7 @@ impl RenderCache {
         face.draw_scaled(display, 380, 215, 4, face_color(ft));
 
         if state.animation_counter % 15 == 14 {
-            fill_region(display, (380, 215, 32, 32));
+            fill_region(display, (380, 215, 32, 32), theme.bg);
             Face::new(FaceType::Sleepy).draw_scaled(
                 display,
                 380,
@@ -171,7 +200,7 @@ impl RenderCache {
         if code == "trend_rain" || code == "trend_sun" {
             let tip = MonoTextStyleBuilder::new()
                 .font(&FONT_6X10)
-                .text_color(Rgb565::new(200, 200, 200))
+                .text_color(theme.dim)
                 .build();
             Text::new(
                 if code == "trend_rain" {
@@ -217,7 +246,9 @@ impl RenderCache {
         }
     }
 
-    fn sync(&mut self, state: &SystemState, time: &DateTime, code: &str) {
+    fn sync(&mut self, state: &SystemState, time: &DateTime, code: &str, theme: &Theme) {
+        self.page = state.display_page;
+        self.night = theme.is_night;
         self.second = time.second;
         self.minute = time.minute;
         self.hour = time.hour;

@@ -34,8 +34,9 @@ static_cell = "2"
 # WiFi 固件
 cyw43-setup = "0.1"
 
-# 数学库（用于 PIO 时钟分频）
+# 数学库（用于 PIO 时钟分频、露点计算）
 fixed = "1"
+libm = "0.2"
 
 # 调试
 defmt = "1"

@@ -7,6 +7,7 @@
 extern crate alloc;
 
 mod buzzer;
+mod comfort;
 mod config;
 mod display;
 mod i2c_bus;
@@ -17,13 +18,13 @@ mod state;
 
 use buzzer::{beep, melody, BIRTHDAY_SONG};
 use defmt::*;
-use display::{draw_special_event, face_color, Face, FaceType, BG_COLOR, Ili9488Display};
+use display::{draw_special_event, face_color, theme_for_hour, Face, FaceType, Ili9488Display};
 use embassy_executor::Spawner;
 use embassy_rp::gpio::{Input, Level, Output, Pull};
 use embassy_rp::i2c::{self, Config as I2cConfig};
 use embassy_rp::spi::{Config as SpiConfig, Spi};
 use embassy_sync::mutex::Mutex;
-use embassy_time::Timer;
+use embassy_time::{Duration, Instant, Timer};
 use embedded_graphics::{
     mono_font::{ascii::FONT_10X20, MonoTextStyleBuilder},
     prelude::*,
@@ -40,10 +41,11 @@ use panic_probe as _;
 #[global_allocator]
 static HEAP: embedded_alloc::LlffHeap = embedded_alloc::LlffHeap::empty();
 
-async fn show_touch_heart(display: &mut Ili9488Display) {
+async fn show_touch_heart(display: &mut Ili9488Display, hour: u8) {
+    let bg = theme_for_hour(hour).bg;
     let mut heart = Face::new(FaceType::Heart);
     for _ in 0..4 {
-        display.fill_rect(380, 215, 32, 32, BG_COLOR.into_storage());
+        display.fill_rect(380, 215, 32, 32, bg.into_storage());
         heart.draw_scaled(display, 380, 215, 4, face_color(FaceType::Heart));
         Timer::after_millis(250).await;
         heart.next_frame();
@@ -102,15 +104,16 @@ async fn main(spawner: Spawner) {
 
     let mut display = Ili9488Display::new(spi, dc, cs);
     display.init();
-    display.clear(BG_COLOR);
+    let boot_theme = theme_for_hour(12);
+    display.clear(boot_theme.bg);
     {
         let mut loading = Face::new(FaceType::Loading);
         for _ in 0..6 {
-            display.clear(BG_COLOR);
+            display.clear(boot_theme.bg);
             loading.draw_scaled(&mut display, 216, 120, 6, face_color(FaceType::Loading));
             let ts = MonoTextStyleBuilder::new()
                 .font(&FONT_10X20)
-                .text_color(embedded_graphics::pixelcolor::Rgb565::WHITE)
+                .text_color(boot_theme.text)
                 .build();
             Text::new("天气站启动中...", Point::new(140, 220), ts)
                 .draw(&mut display)
@@ -172,7 +175,10 @@ async fn main(spawner: Spawner) {
     beep(&mut buzzer, 100).await;
 
     let mut touch_pressed = false;
+    let mut touch_down: Option<Instant> = None;
+    let mut touch_long_done = false;
     let mut last_wifi_reconnect = 0u64;
+    let long_press = Duration::from_millis(config::TOUCH_LONG_PRESS_MS);
 
     loop {
         let loop_start = embassy_time::Instant::now().as_secs();
@@ -206,14 +212,35 @@ async fn main(spawner: Spawner) {
             Err(e) => warn!("DS3231 读取失败: {:?}", e),
         }
 
+        let touch_hour = state
+            .current_time
+            .map(|t| t.hour)
+            .unwrap_or(12);
+
         if touch.is_high() {
             if !touch_pressed {
                 touch_pressed = true;
-                beep(&mut buzzer, 50).await;
-                show_touch_heart(&mut display).await;
+                touch_down = Some(Instant::now());
+                touch_long_done = false;
+            } else if !touch_long_done {
+                if let Some(down) = touch_down {
+                    if down.elapsed() >= long_press {
+                        touch_long_done = true;
+                        beep(&mut buzzer, 30).await;
+                        show_touch_heart(&mut display, touch_hour).await;
+                        render_cache.invalidate();
+                    }
+                }
             }
-        } else {
+        } else if touch_pressed {
+            if !touch_long_done {
+                state.next_page();
+                info!("切换页面: {}", state.display_page.label());
+                beep(&mut buzzer, 50).await;
+                render_cache.invalidate();
+            }
             touch_pressed = false;
+            touch_down = None;
         }
 
         handle_special_event(&mut display, &mut buzzer, &mut render_cache, &mut state).await;
