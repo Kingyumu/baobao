@@ -11,6 +11,25 @@ pub const WIFI_RECONNECT_INTERVAL: u64 = 60;
 pub const NIGHT_START_HOUR: u8 = 22;
 pub const NIGHT_END_HOUR: u8 = 7;
 pub const TOUCH_LONG_PRESS_MS: u64 = 2000;
+
+// 闹钟（软件检测，到点蜂鸣）
+pub const ALARM_ENABLED: bool = true;
+pub const ALARM_HOUR: u8 = 7;
+pub const ALARM_MINUTE: u8 = 30;
+
+// 整点报时（8:00–21:00 每小时短响一声）
+pub const HOURLY_CHIME_ENABLED: bool = true;
+pub const HOURLY_CHIME_START: u8 = 8;
+pub const HOURLY_CHIME_END: u8 = 21;
+
+// 气压曲线（每 60 秒采样，保留 48 点 ≈ 48 分钟）
+pub const PRESSURE_CHART_INTERVAL: u64 = 60;
+pub const PRESSURE_CHART_LEN: usize = 48;
+
+// 变天预警
+pub const WEATHER_ALERT_COOLDOWN: u64 = 3600;
+pub const WEATHER_ALERT_DURATION: u64 = 30;
+
 pub const BIRTHDAY_MONTH: u8 = 3;
 pub const BIRTHDAY_DAY: u8 = 15;
 pub const ANNIVERSARIES: &[(u8, u8, &str)] = &[

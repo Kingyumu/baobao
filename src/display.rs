@@ -745,7 +745,7 @@ pub fn draw_detail_page(d: &mut Ili9488Display, state: &SystemState, theme: &The
     )
     .draw(d)
     .ok();
-    y += 35;
+    y += 30;
     Text::new(
         if theme.is_night {
             "夜间模式  已开启"
@@ -757,6 +757,109 @@ pub fn draw_detail_page(d: &mut Ili9488Display, state: &SystemState, theme: &The
     )
     .draw(d)
     .ok();
+
+    draw_pressure_chart(d, state, theme, 40, 210, 400, 85);
+}
+
+pub fn draw_pressure_chart(
+    d: &mut Ili9488Display,
+    state: &SystemState,
+    theme: &Theme,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) {
+    let small = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(theme.dim)
+        .build();
+    let frame = PrimitiveStyle::with_stroke(theme.dim, 1);
+
+    Text::new("气压曲线 (~48min)", Point::new(x, y - 8), small)
+        .draw(d)
+        .ok();
+    Line::new(Point::new(x, y + h), Point::new(x + w, y + h))
+        .into_styled(frame)
+        .draw(d)
+        .ok();
+    Line::new(Point::new(x, y), Point::new(x, y + h))
+        .into_styled(frame)
+        .draw(d)
+        .ok();
+
+    let count = state.chart_count();
+    if count < 2 {
+        Text::new("采集中...", Point::new(x + 10, y + h / 2), small)
+            .draw(d)
+            .ok();
+        return;
+    }
+
+    let mut min_p = state.chart_value(0);
+    let mut max_p = min_p;
+    for i in 1..count {
+        let v = state.chart_value(i);
+        if v < min_p {
+            min_p = v;
+        }
+        if v > max_p {
+            max_p = v;
+        }
+    }
+    let range = (max_p - min_p).max(1.0);
+    let line_style = PrimitiveStyle::with_stroke(theme.accent, 1);
+
+    let mut prev: Option<Point> = None;
+    for i in 0..count {
+        let v = state.chart_value(i);
+        let px = x + (i as i32 * (w - 1)) / (count as i32 - 1).max(1);
+        let norm = (v - min_p) / range;
+        let py = y + h - 1 - (norm * (h - 2) as f32) as i32;
+        let pt = Point::new(px, py);
+        if let Some(p) = prev {
+            Line::new(p, pt).into_styled(line_style).draw(d).ok();
+        }
+        prev = Some(pt);
+    }
+
+    Text::new(
+        &alloc::format!("{:.0}", max_p),
+        Point::new(x + 4, y + 10),
+        small,
+    )
+    .draw(d)
+    .ok();
+    Text::new(
+        &alloc::format!("{:.0}", min_p),
+        Point::new(x + 4, y + h - 2),
+        small,
+    )
+    .draw(d)
+    .ok();
+}
+
+pub fn draw_rain_overlay(d: &mut Ili9488Display, frame: u32, _theme: &Theme) {
+    let rain = Rgb565::new(80, 160, 255);
+    let style = PrimitiveStyle::with_stroke(rain, 1);
+    for i in 0..12 {
+        let x = ((frame.wrapping_mul(17).wrapping_add(i as u32 * 53)) % 460) as i32 + 10;
+        let y = ((frame.wrapping_mul(11).wrapping_add(i as u32 * 37)) % 250) as i32 + 20;
+        Line::new(Point::new(x, y), Point::new(x - 2, y + 8))
+            .into_styled(style)
+            .draw(d)
+            .ok();
+    }
+}
+
+pub fn draw_alert_banner(d: &mut Ili9488Display, _theme: &Theme) {
+    let s = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(Rgb565::new(255, 100, 100))
+        .build();
+    Text::new("变天预警 · 气压持续下降", Point::new(8, 12), s)
+        .draw(d)
+        .ok();
 }
 
 pub fn draw_compare_page(d: &mut Ili9488Display, state: &SystemState, theme: &Theme) {

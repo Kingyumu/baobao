@@ -59,6 +59,15 @@ pub struct SystemState {
     pub last_weather_update: u64,
     pub last_ntp_sync: u64,
     pub display_page: DisplayPage,
+    pressure_chart: [f32; config::PRESSURE_CHART_LEN],
+    chart_idx: usize,
+    chart_filled: bool,
+    last_chart_sample: u64,
+    pub weather_alert_active: bool,
+    weather_alert_until: u64,
+    last_weather_alert: u64,
+    last_hourly_chime: Option<(u8, u8, u8)>,
+    alarm_handled: Option<(u8, u8)>,
 }
 
 impl SystemState {
@@ -83,6 +92,15 @@ impl SystemState {
             last_weather_update: 0,
             last_ntp_sync: 0,
             display_page: DisplayPage::Main,
+            pressure_chart: [1013.0; config::PRESSURE_CHART_LEN],
+            chart_idx: 0,
+            chart_filled: false,
+            last_chart_sample: 0,
+            weather_alert_active: false,
+            weather_alert_until: 0,
+            last_weather_alert: 0,
+            last_hourly_chime: None,
+            alarm_handled: None,
         }
     }
 
@@ -179,5 +197,106 @@ impl SystemState {
 
     pub fn next_page(&mut self) {
         self.display_page = self.display_page.next();
+    }
+
+    pub fn sample_pressure_chart(&mut self, now: u64) {
+        if now.saturating_sub(self.last_chart_sample) < config::PRESSURE_CHART_INTERVAL {
+            return;
+        }
+        self.last_chart_sample = now;
+        self.pressure_chart[self.chart_idx] = self.pressure;
+        self.chart_idx = (self.chart_idx + 1) % config::PRESSURE_CHART_LEN;
+        if self.chart_idx == 0 {
+            self.chart_filled = true;
+        }
+    }
+
+    pub fn chart_count(&self) -> usize {
+        if self.chart_filled {
+            config::PRESSURE_CHART_LEN
+        } else {
+            self.chart_idx
+        }
+    }
+
+    pub fn chart_value(&self, i: usize) -> f32 {
+        let n = self.chart_count();
+        if n == 0 {
+            return self.pressure;
+        }
+        let start = if self.chart_filled {
+            self.chart_idx
+        } else {
+            0
+        };
+        self.pressure_chart[(start + i) % config::PRESSURE_CHART_LEN]
+    }
+
+    pub fn check_weather_alert(&mut self, now: u64) -> bool {
+        if self.weather_alert_active {
+            return false;
+        }
+        if now.saturating_sub(self.last_weather_alert) < config::WEATHER_ALERT_COOLDOWN {
+            return false;
+        }
+        if !self.pressure_filled || self.pressure_trend != PressureTrend::Falling {
+            return false;
+        }
+        if self.pressure >= 1005.0 {
+            return false;
+        }
+        self.last_weather_alert = now;
+        true
+    }
+
+    pub fn activate_weather_alert(&mut self, now: u64) {
+        self.weather_alert_active = true;
+        self.weather_alert_until = now + config::WEATHER_ALERT_DURATION;
+    }
+
+    pub fn tick_weather_alert(&mut self, now: u64) {
+        if self.weather_alert_active && now >= self.weather_alert_until {
+            self.weather_alert_active = false;
+        }
+    }
+
+    pub fn weather_alert_showing(&self) -> bool {
+        self.weather_alert_active
+    }
+
+    pub fn check_hourly_chime(&mut self, t: &DateTime) -> bool {
+        if !config::HOURLY_CHIME_ENABLED {
+            return false;
+        }
+        if t.minute != 0 || t.second >= 2 {
+            return false;
+        }
+        if t.hour < config::HOURLY_CHIME_START || t.hour > config::HOURLY_CHIME_END {
+            return false;
+        }
+        let key = (t.hour, t.day, t.month);
+        if self.last_hourly_chime == Some(key) {
+            return false;
+        }
+        self.last_hourly_chime = Some(key);
+        true
+    }
+
+    pub fn check_alarm(&mut self, t: &DateTime) -> bool {
+        if !config::ALARM_ENABLED {
+            return false;
+        }
+        if t.hour != config::ALARM_HOUR
+            || t.minute != config::ALARM_MINUTE
+            || t.second >= 2
+        {
+            return false;
+        }
+        let today = (t.month, t.day);
+        if self.alarm_handled == Some(today) {
+            return false;
+        }
+        self.alarm_handled = Some(today);
+        true
     }
 }

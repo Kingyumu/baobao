@@ -1,7 +1,7 @@
 use crate::display::{
-    draw_clock, draw_compare_page, draw_date, draw_detail_page, draw_page_indicator,
-    draw_weather_panel, draw_wifi_icon, face_color, select_face, theme_for_hour, Face,
-    FaceType, Theme, Ili9488Display,
+    draw_alert_banner, draw_clock, draw_compare_page, draw_date, draw_detail_page,
+    draw_page_indicator, draw_rain_overlay, draw_weather_panel, draw_wifi_icon, face_color,
+    select_face, theme_for_hour, Face, FaceType, Theme, Ili9488Display,
 };
 use crate::sensors::DateTime;
 use crate::state::{DisplayPage, NetworkWeather, SystemState};
@@ -131,6 +131,10 @@ impl RenderCache {
             self.draw_face(display, state, ft, code, &theme);
             draw_date(display, time, &theme);
             draw_page_indicator(display, state.display_page, &theme);
+            if state.weather_alert_showing() {
+                draw_rain_overlay(display, state.animation_counter, &theme);
+                draw_alert_banner(display, &theme);
+            }
             self.sync(state, time, code, &theme);
             self.ready = true;
             return;
@@ -168,6 +172,11 @@ impl RenderCache {
 
         fill_region(display, FACE_REGION, theme.bg);
         self.draw_face(display, state, ft, code, &theme);
+
+        if state.weather_alert_showing() {
+            draw_rain_overlay(display, state.animation_counter, &theme);
+            draw_alert_banner(display, &theme);
+        }
 
         self.sync(state, time, code, &theme);
     }

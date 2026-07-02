@@ -16,7 +16,7 @@ mod render;
 mod sensors;
 mod state;
 
-use buzzer::{beep, melody, BIRTHDAY_SONG};
+use buzzer::{alert_beep, beep, hourly_chime, melody, melody_for_event, ALARM_MELODY};
 use defmt::*;
 use display::{draw_special_event, face_color, theme_for_hour, Face, FaceType, Ili9488Display};
 use embassy_executor::Spawner;
@@ -66,9 +66,7 @@ async fn handle_special_event(
     info!("特殊事件: {}", ev);
     state.mark_special_event_handled();
 
-    if ev.contains("生日") {
-        melody(buzzer, &BIRTHDAY_SONG).await;
-    }
+    melody(buzzer, melody_for_event(ev)).await;
 
     draw_special_event(display, ev);
     let mut heart = Face::new(FaceType::Heart);
@@ -211,6 +209,24 @@ async fn main(spawner: Spawner) {
             Ok(t) => state.update_time(t),
             Err(e) => warn!("DS3231 读取失败: {:?}", e),
         }
+
+        state.sample_pressure_chart(loop_start);
+
+        if let Some(t) = state.current_time {
+            if state.check_hourly_chime(&t) {
+                hourly_chime(&mut buzzer).await;
+            }
+            if state.check_alarm(&t) {
+                melody(&mut buzzer, &ALARM_MELODY).await;
+            }
+        }
+
+        if state.check_weather_alert(loop_start) {
+            state.activate_weather_alert(loop_start);
+            alert_beep(&mut buzzer).await;
+            render_cache.invalidate();
+        }
+        state.tick_weather_alert(loop_start);
 
         let touch_hour = state
             .current_time
