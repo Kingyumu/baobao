@@ -135,7 +135,7 @@ async fn try_save_and_connect(
         config::PROVISION_CONNECT_ATTEMPTS,
     )
     .await?;
-    wifi_store::save(flash, creds).map_err(|_| WifiConnectError::JoinFailed)?;
+    wifi_store::remember(flash, creds).map_err(|_| WifiConnectError::JoinFailed)?;
     Ok(())
 }
 

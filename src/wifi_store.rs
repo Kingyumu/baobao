@@ -1,16 +1,29 @@
-//! WiFi 凭据 Flash 持久化（最后一扇区 4KB）。
+//! WiFi 凭据 Flash 持久化（最后一扇区 4KB，最多记住 5 个网络，最近使用的优先）。
 
 use crate::config;
 use defmt::*;
 use embassy_rp::flash::{Blocking, Error, Flash, ERASE_SIZE, FLASH_BASE};
 use heapless::String;
+use heapless::Vec;
 
 pub const FLASH_SIZE: usize = 4096 * 1024;
 const STORE_OFFSET: u32 = (FLASH_SIZE - ERASE_SIZE) as u32;
-const MAGIC: u32 = 0x5749_4649; // "WIFI"
+const MAGIC_V1: u32 = 0x5749_4649; // "WIFI" — 旧版单条
+const MAGIC_V2: u32 = 0x5746_4D32; // "WFM2" — 多网络
+pub const MAX_NETWORKS: usize = 5;
 
 #[repr(C)]
-struct WifiStoreRaw {
+#[derive(Copy, Clone)]
+struct WifiEntryRaw {
+    ssid_len: u8,
+    pass_len: u8,
+    _pad: [u8; 2],
+    ssid: [u8; 32],
+    password: [u8; 64],
+}
+
+#[repr(C)]
+struct WifiStoreRawV1 {
     magic: u32,
     ssid_len: u8,
     pass_len: u8,
@@ -19,6 +32,15 @@ struct WifiStoreRaw {
     password: [u8; 64],
 }
 
+#[repr(C)]
+struct WifiStoreRawV2 {
+    magic: u32,
+    count: u8,
+    _pad: [u8; 3],
+    entries: [WifiEntryRaw; MAX_NETWORKS],
+}
+
+#[derive(Clone)]
 pub struct WifiCredentials {
     pub ssid: String<32>,
     pub password: String<64>,
@@ -34,15 +56,17 @@ impl WifiCredentials {
     }
 }
 
-fn read_raw() -> WifiStoreRaw {
-    let ptr = (FLASH_BASE as u32 + STORE_OFFSET) as *const WifiStoreRaw;
+fn read_v1() -> WifiStoreRawV1 {
+    let ptr = (FLASH_BASE as u32 + STORE_OFFSET) as *const WifiStoreRawV1;
     unsafe { core::ptr::read_volatile(ptr) }
 }
 
-fn raw_to_creds(raw: &WifiStoreRaw) -> Option<WifiCredentials> {
-    if raw.magic != MAGIC {
-        return None;
-    }
+fn read_v2() -> WifiStoreRawV2 {
+    let ptr = (FLASH_BASE as u32 + STORE_OFFSET) as *const WifiStoreRawV2;
+    unsafe { core::ptr::read_volatile(ptr) }
+}
+
+fn entry_raw_to_creds(raw: &WifiEntryRaw) -> Option<WifiCredentials> {
     let ssid_len = raw.ssid_len as usize;
     let pass_len = raw.pass_len as usize;
     if ssid_len == 0 || ssid_len > 32 || pass_len > 64 {
@@ -57,8 +81,48 @@ fn raw_to_creds(raw: &WifiStoreRaw) -> Option<WifiCredentials> {
     Some(WifiCredentials { ssid: s, password: p })
 }
 
-pub fn load() -> Option<WifiCredentials> {
-    raw_to_creds(&read_raw())
+fn creds_to_entry_raw(creds: &WifiCredentials) -> Result<WifiEntryRaw, Error> {
+    let ssid_bytes = creds.ssid.as_bytes();
+    let pass_bytes = creds.password.as_bytes();
+    if ssid_bytes.is_empty() || ssid_bytes.len() > 32 || pass_bytes.len() > 64 {
+        return Err(Error::Other);
+    }
+    let mut raw = WifiEntryRaw {
+        ssid_len: ssid_bytes.len() as u8,
+        pass_len: pass_bytes.len() as u8,
+        _pad: [0xFF; 2],
+        ssid: [0xFF; 32],
+        password: [0xFF; 64],
+    };
+    raw.ssid[..ssid_bytes.len()].copy_from_slice(ssid_bytes);
+    raw.password[..pass_bytes.len()].copy_from_slice(pass_bytes);
+    Ok(raw)
+}
+
+fn load_from_flash() -> Vec<WifiCredentials, MAX_NETWORKS> {
+    let mut list = Vec::new();
+    let magic = read_v2().magic;
+    if magic == MAGIC_V2 {
+        let raw = read_v2();
+        let count = (raw.count as usize).min(MAX_NETWORKS);
+        for entry in raw.entries.iter().take(count) {
+            if let Some(creds) = entry_raw_to_creds(entry) {
+                let _ = list.push(creds);
+            }
+        }
+    } else if magic == MAGIC_V1 {
+        let raw = read_v1();
+        if let Some(creds) = entry_raw_to_creds(&WifiEntryRaw {
+            ssid_len: raw.ssid_len,
+            pass_len: raw.pass_len,
+            _pad: raw._pad,
+            ssid: raw.ssid,
+            password: raw.password,
+        }) {
+            let _ = list.push(creds);
+        }
+    }
+    list
 }
 
 /// 开发用默认凭据（config 里填了真实 SSID 时生效）。
@@ -73,39 +137,62 @@ pub fn factory_credentials() -> Option<WifiCredentials> {
     Some(WifiCredentials { ssid, password })
 }
 
-pub fn credentials_to_use() -> Option<WifiCredentials> {
-    load().or_else(factory_credentials)
+/// 返回已保存的全部 WiFi（最近使用的在前）。
+pub fn all_credentials() -> Vec<WifiCredentials, MAX_NETWORKS> {
+    let list = load_from_flash();
+    if list.is_empty() {
+        if let Some(c) = factory_credentials() {
+            let mut out = Vec::new();
+            let _ = out.push(c);
+            return out;
+        }
+    }
+    list
 }
 
-pub fn save(
+fn write_store(
     flash: &mut Flash<'_, embassy_rp::peripherals::FLASH, Blocking, FLASH_SIZE>,
-    creds: &WifiCredentials,
+    entries: &Vec<WifiCredentials, MAX_NETWORKS>,
 ) -> Result<(), Error> {
-    let ssid_bytes = creds.ssid.as_bytes();
-    let pass_bytes = creds.password.as_bytes();
-    if ssid_bytes.is_empty() || ssid_bytes.len() > 32 || pass_bytes.len() > 64 {
-        return Err(Error::Other);
-    }
-
-    let mut raw = WifiStoreRaw {
-        magic: MAGIC,
-        ssid_len: ssid_bytes.len() as u8,
-        pass_len: pass_bytes.len() as u8,
-        _pad: [0xFF; 2],
-        ssid: [0xFF; 32],
-        password: [0xFF; 64],
+    let mut raw = WifiStoreRawV2 {
+        magic: MAGIC_V2,
+        count: entries.len() as u8,
+        _pad: [0xFF; 3],
+        entries: [WifiEntryRaw {
+            ssid_len: 0,
+            pass_len: 0,
+            _pad: [0xFF; 2],
+            ssid: [0xFF; 32],
+            password: [0xFF; 64],
+        }; MAX_NETWORKS],
     };
-    raw.ssid[..ssid_bytes.len()].copy_from_slice(ssid_bytes);
-    raw.password[..pass_bytes.len()].copy_from_slice(pass_bytes);
+    for (i, creds) in entries.iter().enumerate() {
+        raw.entries[i] = creds_to_entry_raw(creds)?;
+    }
 
     flash.blocking_erase(STORE_OFFSET, STORE_OFFSET + ERASE_SIZE as u32)?;
     flash.blocking_write(STORE_OFFSET, unsafe {
         core::slice::from_raw_parts(
-            &raw as *const WifiStoreRaw as *const u8,
-            core::mem::size_of::<WifiStoreRaw>(),
+            &raw as *const WifiStoreRawV2 as *const u8,
+            core::mem::size_of::<WifiStoreRawV2>(),
         )
     })?;
-    info!("WiFi 凭据已写入 Flash");
+    Ok(())
+}
+
+/// 记住一条 WiFi：同 SSID 更新密码并置顶，新 SSID 插入队首，超出容量丢弃最旧的。
+pub fn remember(
+    flash: &mut Flash<'_, embassy_rp::peripherals::FLASH, Blocking, FLASH_SIZE>,
+    creds: &WifiCredentials,
+) -> Result<(), Error> {
+    let mut list = load_from_flash();
+    list.retain(|e| e.ssid != creds.ssid);
+    list.insert(0, creds.clone()).map_err(|_| Error::Other)?;
+    while list.len() > MAX_NETWORKS {
+        list.pop();
+    }
+    write_store(flash, &list)?;
+    info!("WiFi 已记住: {} (共 {} 条)", creds.ssid_str(), list.len());
     Ok(())
 }
 
@@ -113,7 +200,7 @@ pub fn clear(
     flash: &mut Flash<'_, embassy_rp::peripherals::FLASH, Blocking, FLASH_SIZE>,
 ) -> Result<(), Error> {
     flash.blocking_erase(STORE_OFFSET, STORE_OFFSET + ERASE_SIZE as u32)?;
-    info!("WiFi 凭据已清除");
+    info!("WiFi 记忆已清除");
     Ok(())
 }
 

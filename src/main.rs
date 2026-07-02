@@ -36,7 +36,7 @@ use embedded_graphics::{
     text::Text,
 };
 use i2c_bus::{I2cBus, I2cIrqs};
-use network::{connect_wifi, connect_wifi_with, fetch_weather, init_wifi, sync_ntp};
+use network::{connect_wifi, fetch_weather, init_wifi, sync_ntp};
 use render::RenderCache;
 use sensors::{Bme280, DateTime, Ds3231};
 use state::SystemState;
@@ -156,18 +156,7 @@ async fn main(spawner: Spawner) {
     )
     .await;
 
-    let mut wifi_connected = false;
-    if let Some(creds) = wifi_store::credentials_to_use() {
-        wifi_connected = connect_wifi_with(
-            &mut wifi_control,
-            stack,
-            creds.ssid_str(),
-            creds.password_str(),
-            config::PROVISION_CONNECT_ATTEMPTS,
-        )
-        .await
-        .is_ok();
-    }
+    let wifi_connected = connect_wifi(&mut wifi_control, stack, &mut flash).await;
 
     if !wifi_connected {
         provisioning::run(
@@ -235,7 +224,7 @@ async fn main(spawner: Spawner) {
             if loop_start.saturating_sub(last_wifi_reconnect) >= config::WIFI_RECONNECT_INTERVAL {
                 last_wifi_reconnect = loop_start;
                 info!("WiFi 断开，尝试重连...");
-                if connect_wifi(&mut wifi_control, stack).await {
+                if connect_wifi(&mut wifi_control, stack, &mut flash).await {
                     state.wifi_connected = true;
                     state.last_ntp_sync = 0;
                     state.last_weather_update = 0;

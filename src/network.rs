@@ -1,6 +1,6 @@
 use crate::config;
 use crate::i2c_bus::I2cBus;
-use crate::wifi_store;
+use crate::wifi_store::{self, FLASH_SIZE};
 use crate::sensors::Ds3231;
 use crate::state::NetworkWeather;
 use cyw43::{Aligned, A4, Cyw43439};
@@ -14,6 +14,7 @@ use embassy_rp::gpio::{Level, Output};
 use embassy_rp::peripherals::{DMA_CH0, DMA_CH1, PIO0};
 use embassy_rp::pio::InterruptHandler as PioIrq;
 use embassy_rp::{dma::Channel, pio::Pio, Peri};
+use embassy_rp::flash::{Blocking, Flash};
 use embassy_time::{Duration, Timer};
 use fixed::traits::ToFixed;
 use static_cell::StaticCell;
@@ -175,25 +176,40 @@ pub async fn connect_wifi_with(
     Ok(())
 }
 
-/// 尝试连接 Flash 中保存的 WiFi（用于启动与断线重连）。
+/// 依次尝试 Flash 中记住的全部 WiFi（最近使用的优先），成功后将该网络置顶。
 pub async fn connect_wifi(
     control: &mut cyw43::Control<'static>,
     stack: embassy_net::Stack<'static>,
+    flash: &mut Flash<'_, embassy_rp::peripherals::FLASH, Blocking, FLASH_SIZE>,
 ) -> bool {
-    let creds = match wifi_store::credentials_to_use() {
-        Some(c) => c,
-        None => return false,
-    };
+    let networks = wifi_store::all_credentials();
+    if networks.is_empty() {
+        return false;
+    }
+
     configure_sta_stack(stack);
-    connect_wifi_with(
-        control,
-        stack,
-        creds.ssid_str(),
-        creds.password_str(),
-        config::PROVISION_CONNECT_ATTEMPTS,
-    )
-    .await
-    .is_ok()
+    for creds in networks.iter() {
+        info!("尝试连接 WiFi: {}", creds.ssid_str());
+        match connect_wifi_with(
+            control,
+            stack,
+            creds.ssid_str(),
+            creds.password_str(),
+            1,
+        )
+        .await
+        {
+            Ok(()) => {
+                let _ = wifi_store::remember(flash, creds);
+                return true;
+            }
+            Err(e) => {
+                warn!("连接 {} 失败: {:?}", creds.ssid_str(), e);
+                control.leave().await;
+            }
+        }
+    }
+    false
 }
 
 #[embassy_executor::task]
