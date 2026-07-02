@@ -1,0 +1,20 @@
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+runner = "probe-rs run --chip RP2350 --protocol swd"
+
+[build]
+target = "thumbv8m.main-none-eabihf"
+
+[env]
+DEFMT_LOG = "info"
+
+[profile.dev]
+opt-level = "s"
+debug = true
+
+[profile.release]
+opt-level = "z"
+debug = false
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

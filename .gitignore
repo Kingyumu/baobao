@@ -1,0 +1,51 @@
+# Rust编译产物
+/target
+*.d
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+
+# Cargo 缓存（保留 Cargo.lock 以锁定嵌入式依赖版本）
+
+# IDE配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 调试文件
+*.pdb
+*.ilk
+
+# 临时文件
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# 3D打印文件（可选，如果不想提交大文件）
+# *.stl
+# *.obj
+# *.step
+
+# 编译脚本输出
+build/
+dist/
+
+# 文档生成
+docs/book/
+
+# 测试文件
+tests/
+benches/
+
+# 示例文件
+examples/
