@@ -1,4 +1,4 @@
-//! 项目配置 — 烧录前在此修改 WiFi、城市、纪念日等参数。
+//! 项目配置 — 城市、纪念日等；WiFi 可在烧录后通过手机配网，也可在此填开发默认凭据。
 
 pub const WIFI_SSID: &str = "你的WiFi名称";
 pub const WIFI_PASSWORD: &str = "你的WiFi密码";
@@ -8,6 +8,13 @@ pub const DISPLAY_UPDATE_INTERVAL: u64 = 1;
 pub const WEATHER_UPDATE_INTERVAL: u64 = 1800;
 pub const NTP_SYNC_INTERVAL: u64 = 3600;
 pub const WIFI_RECONNECT_INTERVAL: u64 = 60;
+
+// SoftAP 网页配网
+pub const PROVISION_AP_SSID: &str = "BaobaoWeather-Setup";
+pub const PROVISION_AP_CHANNEL: u8 = 6;
+pub const PROVISION_IP: (u8, u8, u8, u8) = (192, 168, 4, 1);
+pub const PROVISION_CONNECT_ATTEMPTS: u32 = 3;
+pub const TOUCH_CLEAR_WIFI_MS: u64 = 5000;
 pub const NIGHT_START_HOUR: u8 = 22;
 pub const NIGHT_END_HOUR: u8 = 7;
 pub const TOUCH_LONG_PRESS_MS: u64 = 2000;

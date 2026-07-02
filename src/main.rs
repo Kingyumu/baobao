@@ -13,15 +13,18 @@ mod config;
 mod display;
 mod i2c_bus;
 mod network;
+mod provisioning;
 mod render;
 mod sensors;
 mod state;
+mod wifi_store;
 
 use ble::publish_snapshot;
 use buzzer::{alert_beep, beep, hourly_chime, melody, melody_for_event, ALARM_MELODY};
 use defmt::*;
 use display::{draw_special_event, face_color, theme_for_hour, Face, FaceType, Ili9488Display};
 use embassy_executor::Spawner;
+use embassy_rp::flash::Flash;
 use embassy_rp::gpio::{Input, Level, Output, Pull};
 use embassy_rp::i2c::{self, Config as I2cConfig};
 use embassy_rp::spi::{Config as SpiConfig, Spi};
@@ -33,7 +36,7 @@ use embedded_graphics::{
     text::Text,
 };
 use i2c_bus::{I2cBus, I2cIrqs};
-use network::{connect_wifi, fetch_weather, init_wifi, sync_ntp};
+use network::{connect_wifi, connect_wifi_with, fetch_weather, init_wifi, sync_ntp};
 use render::RenderCache;
 use sensors::{Bme280, DateTime, Ds3231};
 use state::SystemState;
@@ -139,8 +142,9 @@ async fn main(spawner: Spawner) {
     let rtc = Ds3231::new();
     let mut buzzer = Output::new(p.PIN_6, Level::Low);
     let touch = Input::new(p.PIN_7, Pull::Down);
+    let mut flash = Flash::new_blocking(p.FLASH);
 
-    let (mut wifi_control, stack, wifi_connected, bt_device) = init_wifi(
+    let (mut wifi_control, stack, bt_device) = init_wifi(
         &spawner,
         p.PIO0,
         p.DMA_CH0,
@@ -151,6 +155,31 @@ async fn main(spawner: Spawner) {
         p.PIN_29,
     )
     .await;
+
+    let mut wifi_connected = false;
+    if let Some(creds) = wifi_store::credentials_to_use() {
+        wifi_connected = connect_wifi_with(
+            &mut wifi_control,
+            stack,
+            creds.ssid_str(),
+            creds.password_str(),
+            config::PROVISION_CONNECT_ATTEMPTS,
+        )
+        .await
+        .is_ok();
+    }
+
+    if !wifi_connected {
+        provisioning::run(
+            &mut display,
+            &mut wifi_control,
+            stack,
+            &spawner,
+            &mut flash,
+            &mut buzzer,
+        )
+        .await;
+    }
 
     if config::BLE_ENABLED {
         if let Some(bt) = bt_device {
@@ -192,8 +221,10 @@ async fn main(spawner: Spawner) {
     let mut touch_pressed = false;
     let mut touch_down: Option<Instant> = None;
     let mut touch_long_done = false;
+    let mut touch_clear_done = false;
     let mut last_wifi_reconnect = 0u64;
     let long_press = Duration::from_millis(config::TOUCH_LONG_PRESS_MS);
+    let clear_wifi_press = Duration::from_millis(config::TOUCH_CLEAR_WIFI_MS);
 
     loop {
         let loop_start = embassy_time::Instant::now().as_secs();
@@ -258,9 +289,18 @@ async fn main(spawner: Spawner) {
                 touch_pressed = true;
                 touch_down = Some(Instant::now());
                 touch_long_done = false;
-            } else if !touch_long_done {
+                touch_clear_done = false;
+            } else if !touch_clear_done && !touch_long_done {
                 if let Some(down) = touch_down {
-                    if down.elapsed() >= long_press {
+                    let held = down.elapsed();
+                    if held >= clear_wifi_press {
+                        info!("清除 WiFi 配置，进入配网模式...");
+                        beep(&mut buzzer, 100).await;
+                        Timer::after_millis(80).await;
+                        beep(&mut buzzer, 100).await;
+                        let _ = wifi_store::clear(&mut flash);
+                        wifi_store::sys_reset();
+                    } else if held >= long_press {
                         touch_long_done = true;
                         beep(&mut buzzer, 30).await;
                         show_touch_heart(&mut display, touch_hour).await;
@@ -269,7 +309,7 @@ async fn main(spawner: Spawner) {
                 }
             }
         } else if touch_pressed {
-            if !touch_long_done {
+            if !touch_long_done && !touch_clear_done {
                 state.next_page();
                 info!("切换页面: {}", state.display_page.label());
                 beep(&mut buzzer, 50).await;

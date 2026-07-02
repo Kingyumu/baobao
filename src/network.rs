@@ -1,5 +1,6 @@
 use crate::config;
 use crate::i2c_bus::I2cBus;
+use crate::wifi_store;
 use crate::sensors::Ds3231;
 use crate::state::NetworkWeather;
 use cyw43::{Aligned, A4, Cyw43439};
@@ -42,7 +43,6 @@ pub async fn init_wifi(
 ) -> (
     cyw43::Control<'static>,
     embassy_net::Stack<'static>,
-    bool,
     Option<cyw43::bluetooth::BtDriver<'static>>,
 ) {
     let fw = &cyw43_setup::FW;
@@ -89,7 +89,7 @@ pub async fn init_wifi(
     let config = embassy_net::Config::dhcpv4(Default::default());
     let seed = 0x12345678u64;
 
-    static RESOURCES: StaticCell<embassy_net::StackResources<3>> = StaticCell::new();
+    static RESOURCES: StaticCell<embassy_net::StackResources<5>> = StaticCell::new();
     let (stack, runner) = embassy_net::new(
         net_device,
         config,
@@ -98,25 +98,56 @@ pub async fn init_wifi(
     );
     spawner.spawn(net_task(runner).unwrap());
 
-    let wifi_ok = connect_wifi(&mut control, stack).await;
-    if !wifi_ok {
-        warn!("WiFi 连接失败，基础功能不受影响");
-    }
-    (control, stack, wifi_ok, bt_device)
+    (control, stack, bt_device)
 }
 
-/// 尝试连接 WiFi 并等待 DHCP（用于启动与断线重连）。
-pub async fn connect_wifi(
+#[derive(Debug, defmt::Format)]
+pub enum WifiConnectError {
+    JoinFailed,
+    DhcpTimeout,
+}
+
+pub fn configure_ap_stack(stack: embassy_net::Stack<'static>) {
+    let ip = embassy_net::Ipv4Address::new(
+        config::PROVISION_IP.0,
+        config::PROVISION_IP.1,
+        config::PROVISION_IP.2,
+        config::PROVISION_IP.3,
+    );
+    stack.set_config_v4(embassy_net::ConfigV4::Static(embassy_net::StaticConfigV4 {
+        address: embassy_net::Ipv4Cidr::new(ip, 24),
+        gateway: Some(ip),
+        dns_servers: heapless::Vec::new(),
+    }));
+}
+
+pub fn configure_sta_stack(stack: embassy_net::Stack<'static>) {
+    stack.set_config_v4(embassy_net::ConfigV4::Dhcp(Default::default()));
+}
+
+pub async fn start_ap(control: &mut cyw43::Control<'static>) {
+    control
+        .start_ap_open(config::PROVISION_AP_SSID, config::PROVISION_AP_CHANNEL)
+        .await;
+    info!("配网热点已开启: {}", config::PROVISION_AP_SSID);
+}
+
+pub async fn stop_ap(control: &mut cyw43::Control<'static>) {
+    control.close_ap().await;
+}
+
+/// 使用指定凭据连接 WiFi 并等待 DHCP。
+pub async fn connect_wifi_with(
     control: &mut cyw43::Control<'static>,
     stack: embassy_net::Stack<'static>,
-) -> bool {
+    ssid: &str,
+    password: &str,
+    attempts: u32,
+) -> Result<(), WifiConnectError> {
     let mut joined = false;
-    for _ in 0..3 {
+    for _ in 0..attempts {
         match control
-            .join(
-                config::WIFI_SSID,
-                cyw43::JoinOptions::new(config::WIFI_PASSWORD.as_bytes()),
-            )
+            .join(ssid, cyw43::JoinOptions::new(password.as_bytes()))
             .await
         {
             Ok(_) => {
@@ -130,19 +161,39 @@ pub async fn connect_wifi(
         }
     }
     if !joined {
-        return false;
+        return Err(WifiConnectError::JoinFailed);
     }
 
-    let deadline = embassy_time::Instant::now() + embassy_time::Duration::from_secs(10);
+    let deadline = embassy_time::Instant::now() + embassy_time::Duration::from_secs(15);
     while !stack.is_config_up() {
         if embassy_time::Instant::now() >= deadline {
-            warn!("DHCP 获取 IP 超时");
-            return false;
+            return Err(WifiConnectError::DhcpTimeout);
         }
         Timer::after_millis(100).await;
     }
     info!("WiFi 已连接");
-    true
+    Ok(())
+}
+
+/// 尝试连接 Flash 中保存的 WiFi（用于启动与断线重连）。
+pub async fn connect_wifi(
+    control: &mut cyw43::Control<'static>,
+    stack: embassy_net::Stack<'static>,
+) -> bool {
+    let creds = match wifi_store::credentials_to_use() {
+        Some(c) => c,
+        None => return false,
+    };
+    configure_sta_stack(stack);
+    connect_wifi_with(
+        control,
+        stack,
+        creds.ssid_str(),
+        creds.password_str(),
+        config::PROVISION_CONNECT_ATTEMPTS,
+    )
+    .await
+    .is_ok()
 }
 
 #[embassy_executor::task]

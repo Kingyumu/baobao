@@ -862,6 +862,50 @@ pub fn draw_alert_banner(d: &mut Ili9488Display, _theme: &Theme) {
         .ok();
 }
 
+pub fn draw_provisioning_screen(d: &mut Ili9488Display) {
+    d.clear(Rgb565::new(0, 0, 40));
+    let title = MonoTextStyleBuilder::new()
+        .font(&FONT_10X20)
+        .text_color(Rgb565::YELLOW)
+        .build();
+    let txt = MonoTextStyleBuilder::new()
+        .font(&FONT_10X20)
+        .text_color(Rgb565::WHITE)
+        .build();
+    let hint = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(Rgb565::new(160, 160, 180))
+        .build();
+    Text::new("WiFi 配网", Point::new(170, 50), title)
+        .draw(d)
+        .ok();
+    Text::new("1. 手机连接热点", Point::new(24, 110), txt).draw(d).ok();
+    let ssid = alloc::format!("   {}", config::PROVISION_AP_SSID);
+    Text::new(&ssid, Point::new(24, 140), txt).draw(d).ok();
+    Text::new("2. 浏览器打开", Point::new(24, 180), txt).draw(d).ok();
+    Text::new("   192.168.4.1", Point::new(24, 210), txt).draw(d).ok();
+    Text::new("3. 填写家里 WiFi", Point::new(24, 250), txt).draw(d).ok();
+    Text::new("长按屏幕 5 秒可重新配网", Point::new(90, 300), hint)
+        .draw(d)
+        .ok();
+}
+
+pub fn draw_provisioning_success(d: &mut Ili9488Display) {
+    d.clear(Rgb565::new(0, 24, 0));
+    let title = MonoTextStyleBuilder::new()
+        .font(&FONT_10X20)
+        .text_color(Rgb565::YELLOW)
+        .build();
+    let txt = MonoTextStyleBuilder::new()
+        .font(&FONT_10X20)
+        .text_color(Rgb565::WHITE)
+        .build();
+    Text::new("配网成功", Point::new(170, 130), title).draw(d).ok();
+    Text::new("设备即将重启...", Point::new(120, 180), txt)
+        .draw(d)
+        .ok();
+}
+
 pub fn draw_compare_page(d: &mut Ili9488Display, state: &SystemState, theme: &Theme) {
     let title = MonoTextStyleBuilder::new()
         .font(&FONT_10X20)

@@ -24,6 +24,7 @@ portable-atomic = { version = "1.5", features = ["critical-section"] }
 
 # 网络栈
 embassy-net = { version = "0.9.1", features = ["defmt", "tcp", "udp", "dhcpv4", "dns"] }
+esp-hal-dhcp-server = "0.4.0"
 
 # 硬件抽象层
 embedded-hal = "1.0"
