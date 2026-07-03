@@ -8,8 +8,11 @@
 pub const WIFI_SSID: &str = "你的WiFi名称";
 pub const WIFI_PASSWORD: &str = "你的WiFi密码";
 
-// --- 网络服务 ---
-pub const CITY_CODE: &str = "101210106"; // 中国天气网城市码
+// --- 网络服务（中国天气网城市码，见制作指南查询方法） ---
+pub const CITY_CODE: &str = "101210106"; // 本地 / 设备所在城市
+pub const LOCAL_CITY_NAME: &str = "杭州-余杭";
+pub const PARTNER_CITY_CODE: &str = "101280801003"; // 对方所在城市
+pub const PARTNER_CITY_NAME: &str = "佛山-顺德-大良街道";
 pub const NTP_SERVER: &str = "ntp.ntsc.ac.cn";
 pub const DISPLAY_UPDATE_INTERVAL: u64 = 1; // 主循环周期（秒）
 pub const WEATHER_UPDATE_INTERVAL: u64 = 1800; // 30 分钟
@@ -29,12 +32,12 @@ pub const NIGHT_END_HOUR: u8 = 7;
 pub const TOUCH_LONG_PRESS_MS: u64 = 2000; // 长按出爱心
 
 // --- 闹钟（软件轮询 DS3231，到点蜂鸣） ---
-pub const ALARM_ENABLED: bool = true;
+pub const ALARM_ENABLED: bool = false;
 pub const ALARM_HOUR: u8 = 7;
 pub const ALARM_MINUTE: u8 = 30;
 
 // --- 整点报时 ---
-pub const HOURLY_CHIME_ENABLED: bool = true;
+pub const HOURLY_CHIME_ENABLED: bool = false;
 pub const HOURLY_CHIME_START: u8 = 8;
 pub const HOURLY_CHIME_END: u8 = 21;
 
@@ -47,9 +50,14 @@ pub const WEATHER_ALERT_COOLDOWN: u64 = 3600;
 pub const WEATHER_ALERT_DURATION: u64 = 30;
 
 // --- BLE 广播（手机 nRF Connect 等可连接） ---
-pub const BLE_ENABLED: bool = true;
+pub const BLE_ENABLED: bool = false;
 pub const BLE_DEVICE_NAME: &str = "Baobao";
 pub const BLE_NOTIFY_INTERVAL_SECS: u64 = 2;
+
+// --- 恋爱纪念日（对方页显示「在一起 n 天」，含起始日当天） ---
+pub const LOVE_START_YEAR: u16 = 2026;
+pub const LOVE_START_MONTH: u8 = 6;
+pub const LOVE_START_DAY: u8 = 20;
 
 // --- 纪念日（月, 日, 显示文案） ---
 pub const BIRTHDAY_MONTH: u8 = 3;

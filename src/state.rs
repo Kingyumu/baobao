@@ -20,28 +20,25 @@ pub enum PressureTrend {
     Falling,
 }
 
-/// 触摸屏短按循环切换的三页 UI。
+/// 触摸屏短按在本地页与对方城市页之间切换。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DisplayPage {
-    Main,
-    Detail,
-    Compare,
+    Local,
+    Partner,
 }
 
 impl DisplayPage {
     pub fn next(self) -> Self {
         match self {
-            Self::Main => Self::Detail,
-            Self::Detail => Self::Compare,
-            Self::Compare => Self::Main,
+            Self::Local => Self::Partner,
+            Self::Partner => Self::Local,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Main => "主页",
-            Self::Detail => "详情",
-            Self::Compare => "对比",
+            Self::Local => "本地",
+            Self::Partner => "对方",
         }
     }
 }
@@ -68,6 +65,8 @@ pub struct SystemState {
     pub weather_code: heapless::String<8>,
     pub wifi_connected: bool,
     pub network_weather: Option<NetworkWeather>,
+    pub partner_weather: Option<NetworkWeather>,
+    pub together_days: u32,
     pub animation_counter: u32,
     pub special_event: Option<&'static str>,
     special_event_handled: Option<(u8, u8)>, // (month, day) 已处理标记
@@ -101,12 +100,14 @@ impl SystemState {
             weather_code: wc,
             wifi_connected: false,
             network_weather: None,
+            partner_weather: None,
+            together_days: 1,
             animation_counter: 0,
             special_event: None,
             special_event_handled: None,
             last_weather_update: 0,
             last_ntp_sync: 0,
-            display_page: DisplayPage::Main,
+            display_page: DisplayPage::Local,
             pressure_chart: [1013.0; config::PRESSURE_CHART_LEN],
             chart_idx: 0,
             chart_filled: false,
@@ -165,6 +166,7 @@ impl SystemState {
             self.special_event_handled = None;
         }
         self.check_special(&t);
+        self.together_days = compute_together_days(&t);
         self.current_time = Some(t);
     }
 
@@ -322,4 +324,31 @@ impl SystemState {
         self.alarm_handled = Some(today);
         true
     }
+}
+
+/// 从恋爱起始日算到今天（含起始日当天为第 1 天）。
+pub fn compute_together_days(today: &DateTime) -> u32 {
+    let start = civil_to_days(
+        config::LOVE_START_YEAR,
+        config::LOVE_START_MONTH,
+        config::LOVE_START_DAY,
+    );
+    let end = civil_to_days(today.year, today.month, today.day);
+    if end >= start {
+        end - start + 1
+    } else {
+        1
+    }
+}
+
+fn civil_to_days(year: u16, month: u8, day: u8) -> u32 {
+    let mut y = year as u32;
+    let m = month as u32;
+    let d = day as u32;
+    y -= if m <= 2 { 1 } else { 0 };
+    let era = y / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
 }

@@ -10,10 +10,9 @@
 //! - `&'static [[u8;8];2]`：表情像素表放 flash，不占 RAM
 //! - `blocking_write`：显示刷新在主循环同步进行，与 async 传感器读取分离
 
-use crate::comfort::{comfort_label, dew_point};
 use crate::config;
 use crate::sensors::DateTime;
-use crate::state::{DisplayPage, NetworkWeather, SystemState};
+use crate::state::{DisplayPage, NetworkWeather};
 use embassy_rp::gpio::Output;
 use embassy_rp::peripherals::SPI1;
 use embassy_rp::spi::{Blocking as SpiBlocking, Spi};
@@ -524,7 +523,7 @@ pub fn draw_clock(d: &mut Ili9488Display, t: &DateTime, theme: &Theme) {
         .ok();
 }
 
-pub fn draw_weather_panel(
+pub fn draw_local_panel(
     d: &mut Ili9488Display,
     temp: f32,
     hum: f32,
@@ -550,9 +549,13 @@ pub fn draw_weather_panel(
         .text_color(theme.dim)
         .build();
     let icon = weather_emoji(code);
-    Text::new(&alloc::format!("{} 天气", icon), Point::new(x, y), title)
-        .draw(d)
-        .ok();
+    Text::new(
+        &alloc::format!("{} {}", icon, config::LOCAL_CITY_NAME),
+        Point::new(x, y),
+        title,
+    )
+    .draw(d)
+    .ok();
     y += 30;
     Line::new(Point::new(x, y), Point::new(x + 150, y))
         .into_styled(PrimitiveStyle::with_stroke(theme.accent, 1))
@@ -591,8 +594,10 @@ pub fn draw_weather_panel(
             .ok();
         y += 20;
     }
+    Text::new("室内环境", Point::new(x, y), small).draw(d).ok();
+    y += 18;
     Text::new(
-        &alloc::format!("{} 室内 {:.1}°C", temp_icon(temp), temp),
+        &alloc::format!("{} {:.1}°C", temp_icon(temp), temp),
         Point::new(x, y),
         txt,
     )
@@ -610,6 +615,116 @@ pub fn draw_weather_panel(
     Text::new(trend, Point::new(x + 20, y), small)
         .draw(d)
         .ok();
+}
+
+pub fn draw_partner_panel(
+    d: &mut Ili9488Display,
+    together_days: u32,
+    partner_weather: Option<&NetworkWeather>,
+    local_weather: Option<&NetworkWeather>,
+    wifi_connected: bool,
+    theme: &Theme,
+) {
+    let x = 310i32;
+    let mut y = 20i32;
+    let title = MonoTextStyleBuilder::new()
+        .font(&FONT_10X20)
+        .text_color(theme.title)
+        .build();
+    let txt = MonoTextStyleBuilder::new()
+        .font(&FONT_10X20)
+        .text_color(theme.text)
+        .build();
+    let small = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(theme.dim)
+        .build();
+
+    Text::new(
+        &alloc::format!("Ta在·{}", config::PARTNER_CITY_NAME),
+        Point::new(x, y),
+        title,
+    )
+    .draw(d)
+    .ok();
+    y += 30;
+    Line::new(Point::new(x, y), Point::new(x + 150, y))
+        .into_styled(PrimitiveStyle::with_stroke(theme.accent, 1))
+        .draw(d)
+        .ok();
+    y += 14;
+
+    if !wifi_connected {
+        Text::new("离线 · 暂无对方天气", Point::new(x, y), small)
+            .draw(d)
+            .ok();
+    } else if let Some(net) = partner_weather {
+        let icon = weather_emoji(net.weather_code.as_str());
+        Text::new(
+            &alloc::format!("{} {:.1}°C", icon, net.temp),
+            Point::new(x, y),
+            txt,
+        )
+        .draw(d)
+        .ok();
+        y += 30;
+        Text::new(
+            &alloc::format!("{} · 湿度 {:.0}%", net.text, net.humidity),
+            Point::new(x, y),
+            txt,
+        )
+        .draw(d)
+        .ok();
+        y += 28;
+        if let Some(local) = local_weather {
+            Text::new(
+                &city_temp_diff_text(local.temp, net.temp),
+                Point::new(x, y),
+                small,
+            )
+            .draw(d)
+            .ok();
+        }
+    } else {
+        Text::new("对方天气加载中...", Point::new(x, y), small)
+            .draw(d)
+            .ok();
+    }
+
+    draw_together_days(d, x, 188, together_days, theme);
+}
+
+fn draw_together_days(d: &mut Ili9488Display, x: i32, y: i32, days: u32, theme: &Theme) {
+    let small = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(theme.text)
+        .build();
+    let big = MonoTextStyleBuilder::new()
+        .font(&FONT_10X20)
+        .text_color(theme.title)
+        .build();
+
+    Text::new("我们在一起已经", Point::new(x, y), small)
+        .draw(d)
+        .ok();
+    let days_s = alloc::format!("{}", days);
+    let num_y = y + 18;
+    Text::new(&days_s, Point::new(x + 4, num_y), big).draw(d).ok();
+    let suffix_x = x + 4 + days_s.len() as i32 * 10 + 6;
+    Text::new("天了", Point::new(suffix_x, num_y + 8), small)
+        .draw(d)
+        .ok();
+}
+
+fn city_temp_diff_text(local: f32, partner: f32) -> alloc::string::String {
+    let diff = partner - local;
+    if diff.abs() < 0.5 {
+        alloc::format!("与这里气温相近")
+    } else if diff > 0.0 {
+        alloc::format!("比这里暖 {:.1}°C", diff)
+    } else {
+        alloc::format!("比这里凉 {:.1}°C", -diff)
+    }
 }
 
 fn temp_diff_text(indoor: f32, outdoor: f32) -> alloc::string::String {
@@ -697,167 +812,6 @@ pub fn draw_page_indicator(d: &mut Ili9488Display, page: DisplayPage, theme: &Th
     Text::new(&hint, Point::new(8, 310), s).draw(d).ok();
 }
 
-pub fn draw_detail_page(d: &mut Ili9488Display, state: &SystemState, theme: &Theme) {
-    let title = MonoTextStyleBuilder::new()
-        .font(&FONT_10X20)
-        .text_color(theme.title)
-        .build();
-    let txt = MonoTextStyleBuilder::new()
-        .font(&FONT_10X20)
-        .text_color(theme.text)
-        .build();
-    let small = MonoTextStyleBuilder::new()
-        .font(&FONT_6X10)
-        .text_color(theme.dim)
-        .build();
-
-    Text::new("环境详情", Point::new(170, 30), title).draw(d).ok();
-
-    let dp = dew_point(state.temperature, state.humidity);
-    let comfort = comfort_label(state.temperature, state.humidity);
-    let mut y = 70i32;
-
-    Text::new(
-        &alloc::format!("舒适度  {}", comfort),
-        Point::new(40, y),
-        txt,
-    )
-    .draw(d)
-    .ok();
-    y += 35;
-    Text::new(
-        &alloc::format!("露点    {:.1}°C", dp),
-        Point::new(40, y),
-        txt,
-    )
-    .draw(d)
-    .ok();
-    y += 35;
-    Text::new(
-        &alloc::format!("温度    {:.1}°C", state.temperature),
-        Point::new(40, y),
-        txt,
-    )
-    .draw(d)
-    .ok();
-    y += 35;
-    Text::new(
-        &alloc::format!("湿度    {:.0}%", state.humidity),
-        Point::new(40, y),
-        txt,
-    )
-    .draw(d)
-    .ok();
-    y += 35;
-    Text::new(
-        &alloc::format!("气压    {:.0} hPa", state.pressure),
-        Point::new(40, y),
-        txt,
-    )
-    .draw(d)
-    .ok();
-    y += 35;
-    Text::new(
-        &alloc::format!("趋势    {}", state.trend_text()),
-        Point::new(40, y),
-        txt,
-    )
-    .draw(d)
-    .ok();
-    y += 30;
-    Text::new(
-        if theme.is_night {
-            "夜间模式  已开启"
-        } else {
-            "日间模式"
-        },
-        Point::new(40, y),
-        small,
-    )
-    .draw(d)
-    .ok();
-
-    draw_pressure_chart(d, state, theme, 40, 210, 400, 85);
-}
-
-pub fn draw_pressure_chart(
-    d: &mut Ili9488Display,
-    state: &SystemState,
-    theme: &Theme,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-) {
-    let small = MonoTextStyleBuilder::new()
-        .font(&FONT_6X10)
-        .text_color(theme.dim)
-        .build();
-    let frame = PrimitiveStyle::with_stroke(theme.dim, 1);
-
-    Text::new("气压曲线 (~48min)", Point::new(x, y - 8), small)
-        .draw(d)
-        .ok();
-    Line::new(Point::new(x, y + h), Point::new(x + w, y + h))
-        .into_styled(frame)
-        .draw(d)
-        .ok();
-    Line::new(Point::new(x, y), Point::new(x, y + h))
-        .into_styled(frame)
-        .draw(d)
-        .ok();
-
-    let count = state.chart_count();
-    if count < 2 {
-        Text::new("采集中...", Point::new(x + 10, y + h / 2), small)
-            .draw(d)
-            .ok();
-        return;
-    }
-
-    let mut min_p = state.chart_value(0);
-    let mut max_p = min_p;
-    for i in 1..count {
-        let v = state.chart_value(i);
-        if v < min_p {
-            min_p = v;
-        }
-        if v > max_p {
-            max_p = v;
-        }
-    }
-    let range = (max_p - min_p).max(1.0);
-    let line_style = PrimitiveStyle::with_stroke(theme.accent, 1);
-
-    let mut prev: Option<Point> = None;
-    for i in 0..count {
-        let v = state.chart_value(i);
-        let px = x + (i as i32 * (w - 1)) / (count as i32 - 1).max(1);
-        let norm = (v - min_p) / range;
-        let py = y + h - 1 - (norm * (h - 2) as f32) as i32;
-        let pt = Point::new(px, py);
-        if let Some(p) = prev {
-            Line::new(p, pt).into_styled(line_style).draw(d).ok();
-        }
-        prev = Some(pt);
-    }
-
-    Text::new(
-        &alloc::format!("{:.0}", max_p),
-        Point::new(x + 4, y + 10),
-        small,
-    )
-    .draw(d)
-    .ok();
-    Text::new(
-        &alloc::format!("{:.0}", min_p),
-        Point::new(x + 4, y + h - 2),
-        small,
-    )
-    .draw(d)
-    .ok();
-}
-
 pub fn draw_rain_overlay(d: &mut Ili9488Display, frame: u32, _theme: &Theme) {
     let rain = Rgb565::new(80, 160, 255);
     let style = PrimitiveStyle::with_stroke(rain, 1);
@@ -925,71 +879,4 @@ pub fn draw_provisioning_success(d: &mut Ili9488Display) {
     Text::new("设备即将重启...", Point::new(120, 180), txt)
         .draw(d)
         .ok();
-}
-
-pub fn draw_compare_page(d: &mut Ili9488Display, state: &SystemState, theme: &Theme) {
-    let title = MonoTextStyleBuilder::new()
-        .font(&FONT_10X20)
-        .text_color(theme.title)
-        .build();
-    let txt = MonoTextStyleBuilder::new()
-        .font(&FONT_10X20)
-        .text_color(theme.text)
-        .build();
-    let small = MonoTextStyleBuilder::new()
-        .font(&FONT_6X10)
-        .text_color(theme.dim)
-        .build();
-
-    Text::new("室内外对比", Point::new(150, 30), title).draw(d).ok();
-
-    Text::new(
-        &alloc::format!(
-            "室内  {:.1}°C    湿度 {:.0}%",
-            state.temperature,
-            state.humidity
-        ),
-        Point::new(40, 90),
-        txt,
-    )
-    .draw(d)
-    .ok();
-
-    if state.wifi_connected {
-        if let Some(net) = state.network_weather.as_ref() {
-            Text::new(
-                &alloc::format!(
-                    "室外  {:.1}°C    湿度 {:.0}%",
-                    net.temp,
-                    net.humidity
-                ),
-                Point::new(40, 130),
-                txt,
-            )
-            .draw(d)
-            .ok();
-            Text::new(
-                &temp_diff_text(state.temperature, net.temp),
-                Point::new(40, 175),
-                txt,
-            )
-            .draw(d)
-            .ok();
-            Text::new(
-                &alloc::format!("室外天气  {}", net.text.as_str()),
-                Point::new(40, 220),
-                small,
-            )
-            .draw(d)
-            .ok();
-        } else {
-            Text::new("室外数据加载中...", Point::new(40, 130), small)
-                .draw(d)
-                .ok();
-        }
-    } else {
-        Text::new("WiFi 未连接，暂无室外数据", Point::new(40, 130), small)
-            .draw(d)
-            .ok();
-    }
 }

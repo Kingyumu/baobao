@@ -23,7 +23,6 @@ extern crate alloc;
 
 mod ble;
 mod buzzer;
-mod comfort;
 mod config;
 mod display;
 mod i2c_bus;
@@ -210,10 +209,10 @@ async fn main(spawner: Spawner) {
     }
 
     if wifi_connected {
-        match fetch_weather(stack).await {
+        match fetch_weather(stack, config::CITY_CODE).await {
             Some(w) => {
                 info!(
-                    "天气: {}°C {} [{}]",
+                    "本地天气: {}°C {} [{}]",
                     w.temp,
                     w.text.as_str(),
                     w.weather_code.as_str()
@@ -221,7 +220,19 @@ async fn main(spawner: Spawner) {
                 state.set_weather_code(w.weather_code.as_str());
                 state.network_weather = Some(w);
             }
-            None => warn!("首次天气获取失败"),
+            None => warn!("首次本地天气获取失败"),
+        }
+        match fetch_weather(stack, config::PARTNER_CITY_CODE).await {
+            Some(w) => {
+                info!(
+                    "对方天气: {}°C {} [{}]",
+                    w.temp,
+                    w.text.as_str(),
+                    w.weather_code.as_str()
+                );
+                state.partner_weather = Some(w);
+            }
+            None => warn!("首次对方天气获取失败"),
         }
     }
 
@@ -339,19 +350,34 @@ async fn main(spawner: Spawner) {
         if state.wifi_connected
             && loop_start - state.last_weather_update >= config::WEATHER_UPDATE_INTERVAL
         {
-            match fetch_weather(stack).await {
-                Some(w) => {
-                    info!(
-                        "天气: {}°C {} [{}]",
-                        w.temp,
-                        w.text.as_str(),
-                        w.weather_code.as_str()
-                    );
-                    state.set_weather_code(w.weather_code.as_str());
-                    state.network_weather = Some(w);
-                    state.last_weather_update = loop_start;
-                }
-                None => warn!("天气获取失败"),
+            let mut updated = false;
+            if let Some(w) = fetch_weather(stack, config::CITY_CODE).await {
+                info!(
+                    "本地天气: {}°C {} [{}]",
+                    w.temp,
+                    w.text.as_str(),
+                    w.weather_code.as_str()
+                );
+                state.set_weather_code(w.weather_code.as_str());
+                state.network_weather = Some(w);
+                updated = true;
+            } else {
+                warn!("本地天气获取失败");
+            }
+            if let Some(w) = fetch_weather(stack, config::PARTNER_CITY_CODE).await {
+                info!(
+                    "对方天气: {}°C {} [{}]",
+                    w.temp,
+                    w.text.as_str(),
+                    w.weather_code.as_str()
+                );
+                state.partner_weather = Some(w);
+                updated = true;
+            } else {
+                warn!("对方天气获取失败");
+            }
+            if updated {
+                state.last_weather_update = loop_start;
             }
         }
 

@@ -9,9 +9,9 @@
 //! - `Option<f32>` 区分「无室外天气」与「有数据」两种 UI 状态
 
 use crate::display::{
-    draw_alert_banner, draw_clock, draw_compare_page, draw_date, draw_detail_page,
-    draw_page_indicator, draw_rain_overlay, draw_weather_panel, draw_wifi_icon, face_color,
-    select_face, theme_for_hour, Face, FaceType, Theme, Ili9488Display,
+    draw_alert_banner, draw_clock, draw_date, draw_local_panel, draw_page_indicator,
+    draw_partner_panel, draw_rain_overlay, draw_wifi_icon, face_color, select_face,
+    theme_for_hour, Face, FaceType, Theme, Ili9488Display,
 };
 use crate::sensors::DateTime;
 use crate::state::{DisplayPage, NetworkWeather, SystemState};
@@ -24,7 +24,7 @@ use embedded_graphics::{
 
 /// 屏幕各区域的像素范围 (x, y, w, h)，用于局部 `fill_rect` 清背景。
 const CLOCK_REGION: (u16, u16, u16, u16) = (0, 0, 300, 265);
-const WEATHER_REGION: (u16, u16, u16, u16) = (300, 0, 175, 235);
+const INFO_REGION: (u16, u16, u16, u16) = (300, 0, 175, 235);
 const FACE_REGION: (u16, u16, u16, u16) = (375, 210, 40, 50);
 const WIFI_REGION: (u16, u16, u16, u16) = (425, 0, 55, 45);
 const DATE_REGION: (u16, u16, u16, u16) = (0, 292, 480, 28);
@@ -56,6 +56,10 @@ pub struct RenderCache {
     outdoor_temp: Option<f32>,
     outdoor_text: heapless::String<32>,
     outdoor_code: heapless::String<8>,
+    partner_temp: Option<f32>,
+    partner_text: heapless::String<32>,
+    partner_code: heapless::String<8>,
+    together_days: u32,
     wifi: bool,
     display_code: heapless::String<16>,
 }
@@ -64,7 +68,7 @@ impl RenderCache {
     pub fn new() -> Self {
         Self {
             ready: false,
-            page: DisplayPage::Main,
+            page: DisplayPage::Local,
             night: false,
             second: 255,
             minute: 255,
@@ -80,6 +84,10 @@ impl RenderCache {
             outdoor_temp: None,
             outdoor_text: heapless::String::new(),
             outdoor_code: heapless::String::new(),
+            partner_temp: None,
+            partner_text: heapless::String::new(),
+            partner_code: heapless::String::new(),
+            together_days: 0,
             wifi: false,
             display_code: heapless::String::new(),
         }
@@ -90,7 +98,7 @@ impl RenderCache {
         self.ready = false;
     }
 
-    /// 主渲染入口：根据页面与脏区标志决定全量/增量绘制。
+    /// 主渲染入口：本地页与对方页均保留左侧时钟圆盘。
     pub fn update(
         &mut self,
         display: &mut Ili9488Display,
@@ -98,31 +106,12 @@ impl RenderCache {
         time: &DateTime,
     ) {
         let theme = theme_for_hour(time.hour);
-        let code = state.display_code();
-
-        if state.display_page != DisplayPage::Main {
-            display.clear(theme.bg);
-            match state.display_page {
-                DisplayPage::Detail => draw_detail_page(display, state, &theme),
-                DisplayPage::Compare => draw_compare_page(display, state, &theme),
-                DisplayPage::Main => {}
-            }
-            draw_wifi_icon(display, state.wifi_connected, &theme);
-            draw_date(display, time, &theme);
-            draw_page_indicator(display, state.display_page, &theme);
-            self.sync(state, time, code, &theme);
-            self.ready = true;
-            return;
-        }
-
-        let ft = select_face(
-            state.temperature,
-            code,
-            time.hour,
-            state.pressure_trend,
-            state.pressure,
-            state.pressure_filled,
-        );
+        let local_code = state.display_code();
+        let partner_code = state
+            .partner_weather
+            .as_ref()
+            .map(|w| w.weather_code.as_str())
+            .unwrap_or("d01");
 
         let layout_changed =
             !self.ready || self.page != state.display_page || self.night != theme.is_night;
@@ -130,26 +119,16 @@ impl RenderCache {
         if layout_changed {
             display.clear(theme.bg);
             draw_clock(display, time, &theme);
-            draw_weather_panel(
-                display,
-                state.temperature,
-                state.humidity,
-                state.pressure,
-                code,
-                state.trend_text(),
-                state.network_weather.as_ref(),
-                state.wifi_connected,
-                &theme,
-            );
+            self.draw_info_panel(display, state, local_code, &theme);
             draw_wifi_icon(display, state.wifi_connected, &theme);
-            self.draw_face(display, state, ft, code, &theme);
+            self.draw_face(display, state, local_code, partner_code, &theme);
             draw_date(display, time, &theme);
             draw_page_indicator(display, state.display_page, &theme);
-            if state.weather_alert_showing() {
+            if state.display_page == DisplayPage::Local && state.weather_alert_showing() {
                 draw_rain_overlay(display, state.animation_counter, &theme);
                 draw_alert_banner(display, &theme);
             }
-            self.sync(state, time, code, &theme);
+            self.sync(state, time, local_code, &theme);
             self.ready = true;
             return;
         }
@@ -159,19 +138,9 @@ impl RenderCache {
             draw_clock(display, time, &theme);
         }
 
-        if self.weather_changed(state, code) || self.wifi != state.wifi_connected {
-            fill_region(display, WEATHER_REGION, theme.bg);
-            draw_weather_panel(
-                display,
-                state.temperature,
-                state.humidity,
-                state.pressure,
-                code,
-                state.trend_text(),
-                state.network_weather.as_ref(),
-                state.wifi_connected,
-                &theme,
-            );
+        if self.info_changed(state, local_code) || self.wifi != state.wifi_connected {
+            fill_region(display, INFO_REGION, theme.bg);
+            self.draw_info_panel(display, state, local_code, &theme);
         }
 
         if self.wifi != state.wifi_connected {
@@ -185,24 +154,92 @@ impl RenderCache {
         }
 
         fill_region(display, FACE_REGION, theme.bg);
-        self.draw_face(display, state, ft, code, &theme);
+        self.draw_face(display, state, local_code, partner_code, &theme);
 
-        if state.weather_alert_showing() {
+        if state.display_page == DisplayPage::Local && state.weather_alert_showing() {
             draw_rain_overlay(display, state.animation_counter, &theme);
             draw_alert_banner(display, &theme);
         }
 
-        self.sync(state, time, code, &theme);
+        self.sync(state, time, local_code, &theme);
+    }
+
+    fn draw_info_panel(
+        &self,
+        display: &mut Ili9488Display,
+        state: &SystemState,
+        local_code: &str,
+        theme: &Theme,
+    ) {
+        match state.display_page {
+            DisplayPage::Local => draw_local_panel(
+                display,
+                state.temperature,
+                state.humidity,
+                state.pressure,
+                local_code,
+                state.trend_text(),
+                state.network_weather.as_ref(),
+                state.wifi_connected,
+                theme,
+            ),
+            DisplayPage::Partner => draw_partner_panel(
+                display,
+                state.together_days,
+                state.partner_weather.as_ref(),
+                state.network_weather.as_ref(),
+                state.wifi_connected,
+                theme,
+            ),
+        }
     }
 
     fn draw_face(
         &self,
         display: &mut Ili9488Display,
         state: &SystemState,
-        ft: FaceType,
-        code: &str,
+        local_code: &str,
+        partner_code: &str,
         theme: &Theme,
     ) {
+        let (ft, code) = match state.display_page {
+            DisplayPage::Local => (
+                select_face(
+                    state.temperature,
+                    local_code,
+                    state
+                        .current_time
+                        .map(|t| t.hour)
+                        .unwrap_or(12),
+                    state.pressure_trend,
+                    state.pressure,
+                    state.pressure_filled,
+                ),
+                local_code,
+            ),
+            DisplayPage::Partner => {
+                let temp = state
+                    .partner_weather
+                    .as_ref()
+                    .map(|w| w.temp)
+                    .unwrap_or(20.0);
+                (
+                    select_face(
+                        temp,
+                        partner_code,
+                        state
+                            .current_time
+                            .map(|t| t.hour)
+                            .unwrap_or(12),
+                        state.pressure_trend,
+                        state.pressure,
+                        state.pressure_filled,
+                    ),
+                    partner_code,
+                )
+            }
+        };
+
         let mut face = Face::new(ft);
         if state.animation_counter % 2 == 0 {
             face.next_frame();
@@ -247,7 +284,14 @@ impl RenderCache {
         self.day != t.day || self.month != t.month || self.year != t.year
     }
 
-    fn weather_changed(&self, state: &SystemState, code: &str) -> bool {
+    fn info_changed(&self, state: &SystemState, local_code: &str) -> bool {
+        match state.display_page {
+            DisplayPage::Local => self.local_info_changed(state, local_code),
+            DisplayPage::Partner => self.partner_info_changed(state),
+        }
+    }
+
+    fn local_info_changed(&self, state: &SystemState, code: &str) -> bool {
         f32_changed(self.temp, state.temperature)
             || f32_changed(self.hum, state.humidity)
             || f32_changed(self.press, state.pressure)
@@ -257,6 +301,12 @@ impl RenderCache {
             || self.outdoor_changed(state.network_weather.as_ref())
     }
 
+    fn partner_info_changed(&self, state: &SystemState) -> bool {
+        self.partner_changed(state.partner_weather.as_ref())
+            || self.outdoor_changed(state.network_weather.as_ref())
+            || self.together_days != state.together_days
+    }
+
     fn outdoor_changed(&self, net: Option<&NetworkWeather>) -> bool {
         match (self.outdoor_temp, net) {
             (None, None) => false,
@@ -264,6 +314,18 @@ impl RenderCache {
                 f32_changed(a, b.temp)
                     || self.outdoor_text.as_str() != b.text.as_str()
                     || self.outdoor_code.as_str() != b.weather_code.as_str()
+            }
+            _ => true,
+        }
+    }
+
+    fn partner_changed(&self, net: Option<&NetworkWeather>) -> bool {
+        match (self.partner_temp, net) {
+            (None, None) => false,
+            (Some(a), Some(b)) => {
+                f32_changed(a, b.temp)
+                    || self.partner_text.as_str() != b.text.as_str()
+                    || self.partner_code.as_str() != b.weather_code.as_str()
             }
             _ => true,
         }
@@ -297,5 +359,15 @@ impl RenderCache {
         } else {
             self.outdoor_code.clear();
         }
+        self.partner_temp = state.partner_weather.as_ref().map(|w| w.temp);
+        self.partner_text.clear();
+        if let Some(w) = state.partner_weather.as_ref() {
+            let _ = self.partner_text.push_str(w.text.as_str());
+            self.partner_code.clear();
+            let _ = self.partner_code.push_str(w.weather_code.as_str());
+        } else {
+            self.partner_code.clear();
+        }
+        self.together_days = state.together_days;
     }
 }

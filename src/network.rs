@@ -386,7 +386,10 @@ fn is_leap_year(year: u16) -> bool {
 }
 
 /// HTTP GET 中国天气网页面，手工提取 `observe24h_data` JSON 片段。
-pub async fn fetch_weather(stack: embassy_net::Stack<'static>) -> Option<NetworkWeather> {
+pub async fn fetch_weather(
+    stack: embassy_net::Stack<'static>,
+    city_code: &str,
+) -> Option<NetworkWeather> {
     info!("获取网络天气...");
 
     let addr = match stack
@@ -415,7 +418,7 @@ pub async fn fetch_weather(stack: embassy_net::Stack<'static>) -> Option<Network
 
     let request = alloc::format!(
         "GET /weather1d/{}.shtml HTTP/1.1\r\nHost: d1.weather.com.cn\r\nConnection: close\r\n\r\n",
-        config::CITY_CODE
+        city_code
     );
     if socket.write(request.as_bytes()).await.is_err() {
         warn!("HTTP 请求发送失败");
