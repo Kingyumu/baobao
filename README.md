@@ -268,14 +268,14 @@ probe-rs --version
 | ------------ | -------- | ------------------------------ |
 | GP0 (Pin1)   | I2C SDA  | BME280 SDA、DS3231 SDA          |
 | GP1 (Pin2)   | I2C SCL  | BME280 SCL、DS3231 SCL          |
-| GP6 (Pin9)   | GPIO 出   | 蜂鸣器 I/O                        |
-| GP7 (Pin10)  | GPIO 入   | 触摸 I/O                         |
-| GP8 (Pin11)  | GPIO 出   | ILI9488 DC                     |
-| GP9 (Pin12)  | GPIO 出   | ILI9488 CS                     |
-| GP10 (Pin14) | SPI SCK  | ILI9488 SCK                    |
-| GP11 (Pin15) | SPI MOSI | ILI9488 MOSI                   |
+| GP6 (Pin6)   | GPIO 出   | 蜂鸣器 I/O                        |
+| GP7 (Pin7)   | GPIO 入   | 触摸 I/O                         |
+| GP8 (Pin8)   | GPIO 出   | ILI9488 DC                     |
+| GP9 (Pin9)   | GPIO 出   | ILI9488 CS                     |
+| GP10 (Pin10) | SPI SCK  | ILI9488 SCK                    |
+| GP11 (Pin11) | SPI MOSI | ILI9488 MOSI                   |
 | 3V3 (Pin36)  | 电源       | BME280、DS3231、触摸、TFT RST/LED 等 |
-| 5V (Pin40)   | 电源       | 蜂鸣器 VCC（声音更大）；部分 TFT 也可用 5V    |
+| 5V (Pin40)   | 电源       | 部分 TFT 也可用 5V                     |
 | GND (Pin38)  | 地        | 所有模块 GND                       |
 
 
@@ -554,16 +554,16 @@ probe-rs attach --chip RP2350
 Pico 2 W          →  连接
 ────────────────────────────────────────
 3V3  (Pin36)      →  BME280 VCC, DS3231 VCC, TTP223 VCC, TFT RST/LED
-5V   (Pin40)      →  蜂鸣器 VCC（推荐）, TFT VCC（视模块）
+5V   (Pin40)      →  TFT VCC（视模块）
 GND  (Pin38)      →  所有 GND
 GP0  (Pin1)       →  BME280 SDA, DS3231 SDA
 GP1  (Pin2)       →  BME280 SCL, DS3231 SCL
-GP6  (Pin9)       →  蜂鸣器 I/O
-GP7  (Pin10)      →  触摸 I/O
-GP8  (Pin11)      →  ILI9488 DC
-GP9  (Pin12)      →  ILI9488 CS
-GP10 (Pin14)      →  ILI9488 SCK
-GP11 (Pin15)      →  ILI9488 MOSI
+GP6  (Pin6)       →  蜂鸣器 I/O
+GP7  (Pin7)       →  触摸 I/O
+GP8  (Pin8)       →  ILI9488 DC
+GP9  (Pin9)       →  ILI9488 CS
+GP10 (Pin10)      →  ILI9488 SCK
+GP11 (Pin11)      →  ILI9488 MOSI
 （板载）          →  WiFi / BLE，无需外接线
 ```
 
