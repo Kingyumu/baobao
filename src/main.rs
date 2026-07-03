@@ -146,7 +146,7 @@ async fn main(spawner: Spawner) {
                 .font(&FONT_10X20)
                 .text_color(boot_theme.text)
                 .build();
-            Text::new("天气站启动中...", Point::new(140, 220), ts)
+            Text::new("天气站启动中...宝宝我爱你❤", Point::new(140, 220), ts)
                 .draw(&mut display)
                 .ok();
             loading.next_frame();
