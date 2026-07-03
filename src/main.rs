@@ -287,7 +287,7 @@ async fn main(spawner: Spawner) {
             Err(e) => warn!("DS3231 读取失败: {:?}", e),
         }
 
-        state.sample_pressure_chart(loop_start);
+        state.sample_temp_chart(loop_start);
 
         if let Some(t) = state.current_time {
             if state.check_hourly_chime(&t) {

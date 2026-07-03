@@ -12,7 +12,7 @@
 
 use crate::config;
 use crate::sensors::DateTime;
-use crate::state::{DisplayPage, NetworkWeather};
+use crate::state::{DisplayPage, NetworkWeather, SystemState};
 use embassy_rp::gpio::Output;
 use embassy_rp::peripherals::SPI1;
 use embassy_rp::spi::{Blocking as SpiBlocking, Spi};
@@ -615,6 +615,85 @@ pub fn draw_local_panel(
     Text::new(trend, Point::new(x + 20, y), small)
         .draw(d)
         .ok();
+}
+
+/// 本地页时钟下方：室内室温折线（约 2 小时）。
+pub fn draw_temp_chart(
+    d: &mut Ili9488Display,
+    state: &SystemState,
+    theme: &Theme,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) {
+    let small = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(theme.dim)
+        .build();
+    let frame = PrimitiveStyle::with_stroke(theme.dim, 1);
+
+    Text::new("室温曲线 (~2h)", Point::new(x, y - 8), small)
+        .draw(d)
+        .ok();
+    Line::new(Point::new(x, y + h), Point::new(x + w, y + h))
+        .into_styled(frame)
+        .draw(d)
+        .ok();
+    Line::new(Point::new(x, y), Point::new(x, y + h))
+        .into_styled(frame)
+        .draw(d)
+        .ok();
+
+    let count = state.temp_chart_count();
+    if count < 2 {
+        Text::new("采集中...", Point::new(x + 10, y + h / 2), small)
+            .draw(d)
+            .ok();
+        return;
+    }
+
+    let mut min_t = state.temp_chart_value(0);
+    let mut max_t = min_t;
+    for i in 1..count {
+        let v = state.temp_chart_value(i);
+        if v < min_t {
+            min_t = v;
+        }
+        if v > max_t {
+            max_t = v;
+        }
+    }
+    let range = (max_t - min_t).max(0.5);
+    let line_style = PrimitiveStyle::with_stroke(theme.title, 1);
+
+    let mut prev: Option<Point> = None;
+    for i in 0..count {
+        let v = state.temp_chart_value(i);
+        let px = x + (i as i32 * (w - 1)) / (count as i32 - 1).max(1);
+        let norm = (v - min_t) / range;
+        let py = y + h - 1 - (norm * (h - 2) as f32) as i32;
+        let pt = Point::new(px, py);
+        if let Some(p) = prev {
+            Line::new(p, pt).into_styled(line_style).draw(d).ok();
+        }
+        prev = Some(pt);
+    }
+
+    Text::new(
+        &alloc::format!("{:.1}", max_t),
+        Point::new(x + 4, y + 10),
+        small,
+    )
+    .draw(d)
+    .ok();
+    Text::new(
+        &alloc::format!("{:.1}", min_t),
+        Point::new(x + 4, y + h - 2),
+        small,
+    )
+    .draw(d)
+    .ok();
 }
 
 pub fn draw_partner_panel(

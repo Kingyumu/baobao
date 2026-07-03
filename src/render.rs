@@ -10,8 +10,8 @@
 
 use crate::display::{
     draw_alert_banner, draw_clock, draw_date, draw_local_panel, draw_page_indicator,
-    draw_partner_panel, draw_rain_overlay, draw_wifi_icon, face_color, select_face,
-    theme_for_hour, Face, FaceType, Theme, Ili9488Display,
+    draw_partner_panel, draw_rain_overlay, draw_temp_chart, draw_wifi_icon, face_color,
+    select_face, theme_for_hour, Face, FaceType, Theme, Ili9488Display,
 };
 use crate::sensors::DateTime;
 use crate::state::{DisplayPage, NetworkWeather, SystemState};
@@ -24,6 +24,7 @@ use embedded_graphics::{
 
 /// 屏幕各区域的像素范围 (x, y, w, h)，用于局部 `fill_rect` 清背景。
 const CLOCK_REGION: (u16, u16, u16, u16) = (0, 0, 300, 265);
+const TEMP_CHART_REGION: (u16, u16, u16, u16) = (28, 258, 272, 42);
 const INFO_REGION: (u16, u16, u16, u16) = (300, 0, 175, 235);
 const FACE_REGION: (u16, u16, u16, u16) = (375, 210, 40, 50);
 const WIFI_REGION: (u16, u16, u16, u16) = (425, 0, 55, 45);
@@ -60,6 +61,7 @@ pub struct RenderCache {
     partner_text: heapless::String<32>,
     partner_code: heapless::String<8>,
     together_days: u32,
+    chart_tick: u32,
     wifi: bool,
     display_code: heapless::String<16>,
 }
@@ -88,6 +90,7 @@ impl RenderCache {
             partner_text: heapless::String::new(),
             partner_code: heapless::String::new(),
             together_days: 0,
+            chart_tick: 0,
             wifi: false,
             display_code: heapless::String::new(),
         }
@@ -119,6 +122,9 @@ impl RenderCache {
         if layout_changed {
             display.clear(theme.bg);
             draw_clock(display, time, &theme);
+            if state.display_page == DisplayPage::Local {
+                self.draw_temp_chart(display, state, &theme);
+            }
             self.draw_info_panel(display, state, local_code, &theme);
             draw_wifi_icon(display, state.wifi_connected, &theme);
             self.draw_face(display, state, local_code, partner_code, &theme);
@@ -136,6 +142,15 @@ impl RenderCache {
         if self.clock_changed(time) {
             fill_region(display, CLOCK_REGION, theme.bg);
             draw_clock(display, time, &theme);
+            if state.display_page == DisplayPage::Local {
+                fill_region(display, TEMP_CHART_REGION, theme.bg);
+                self.draw_temp_chart(display, state, &theme);
+            }
+        }
+
+        if state.display_page == DisplayPage::Local && self.chart_tick != state.chart_tick {
+            fill_region(display, TEMP_CHART_REGION, theme.bg);
+            self.draw_temp_chart(display, state, &theme);
         }
 
         if self.info_changed(state, local_code) || self.wifi != state.wifi_connected {
@@ -192,6 +207,15 @@ impl RenderCache {
                 theme,
             ),
         }
+    }
+
+    fn draw_temp_chart(
+        &self,
+        display: &mut Ili9488Display,
+        state: &SystemState,
+        theme: &Theme,
+    ) {
+        draw_temp_chart(display, state, theme, 32, 274, 255, 24);
     }
 
     fn draw_face(
@@ -369,5 +393,6 @@ impl RenderCache {
             self.partner_code.clear();
         }
         self.together_days = state.together_days;
+        self.chart_tick = state.chart_tick;
     }
 }

@@ -41,9 +41,9 @@ pub const HOURLY_CHIME_ENABLED: bool = false;
 pub const HOURLY_CHIME_START: u8 = 8;
 pub const HOURLY_CHIME_END: u8 = 21;
 
-// --- 气压曲线（环形缓冲区长度见 state.rs） ---
-pub const PRESSURE_CHART_INTERVAL: u64 = 60;
-pub const PRESSURE_CHART_LEN: usize = 48;
+// --- 室温曲线（环形缓冲区，本地页时钟下方折线图） ---
+pub const TEMP_CHART_INTERVAL: u64 = 60; // 每分钟采样一次
+pub const TEMP_CHART_LEN: usize = 120; // 约 2 小时历史
 
 // --- 变天预警 ---
 pub const WEATHER_ALERT_COOLDOWN: u64 = 3600;

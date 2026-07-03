@@ -73,9 +73,10 @@ pub struct SystemState {
     pub last_weather_update: u64,
     pub last_ntp_sync: u64,
     pub display_page: DisplayPage,
-    pressure_chart: [f32; config::PRESSURE_CHART_LEN],
+    temp_chart: [f32; config::TEMP_CHART_LEN],
     chart_idx: usize,
     chart_filled: bool,
+    pub chart_tick: u32,
     last_chart_sample: u64,
     pub weather_alert_active: bool,
     weather_alert_until: u64,
@@ -108,9 +109,10 @@ impl SystemState {
             last_weather_update: 0,
             last_ntp_sync: 0,
             display_page: DisplayPage::Local,
-            pressure_chart: [1013.0; config::PRESSURE_CHART_LEN],
+            temp_chart: [20.0; config::TEMP_CHART_LEN],
             chart_idx: 0,
             chart_filled: false,
+            chart_tick: 0,
             last_chart_sample: 0,
             weather_alert_active: false,
             weather_alert_until: 0,
@@ -219,39 +221,39 @@ impl SystemState {
         self.display_page = self.display_page.next();
     }
 
-    /// 每分钟采样一次，写入气压曲线环形缓冲。
-    pub fn sample_pressure_chart(&mut self, now: u64) {
-        if now.saturating_sub(self.last_chart_sample) < config::PRESSURE_CHART_INTERVAL {
+    /// 每分钟采样一次室温，写入环形缓冲（供本地页折线图）。
+    pub fn sample_temp_chart(&mut self, now: u64) {
+        if now.saturating_sub(self.last_chart_sample) < config::TEMP_CHART_INTERVAL {
             return;
         }
         self.last_chart_sample = now;
-        self.pressure_chart[self.chart_idx] = self.pressure;
-        self.chart_idx = (self.chart_idx + 1) % config::PRESSURE_CHART_LEN;
+        self.temp_chart[self.chart_idx] = self.temperature;
+        self.chart_idx = (self.chart_idx + 1) % config::TEMP_CHART_LEN;
         if self.chart_idx == 0 {
             self.chart_filled = true;
         }
+        self.chart_tick = self.chart_tick.wrapping_add(1);
     }
 
-    pub fn chart_count(&self) -> usize {
+    pub fn temp_chart_count(&self) -> usize {
         if self.chart_filled {
-            config::PRESSURE_CHART_LEN
+            config::TEMP_CHART_LEN
         } else {
             self.chart_idx
         }
     }
 
-    /// 按时间顺序取第 i 个点（处理环形缓冲区的起始偏移）。
-    pub fn chart_value(&self, i: usize) -> f32 {
-        let n = self.chart_count();
+    pub fn temp_chart_value(&self, i: usize) -> f32 {
+        let n = self.temp_chart_count();
         if n == 0 {
-            return self.pressure;
+            return self.temperature;
         }
         let start = if self.chart_filled {
             self.chart_idx
         } else {
             0
         };
-        self.pressure_chart[(start + i) % config::PRESSURE_CHART_LEN]
+        self.temp_chart[(start + i) % config::TEMP_CHART_LEN]
     }
 
     /// 气压骤降且绝对值偏低时触发变天预警（带冷却时间）。
