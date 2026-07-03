@@ -1,12 +1,18 @@
 //! 舒适度与露点计算（基于 BME280 温湿度）。
+//!
+//! 纯函数模块：无状态、无 IO，便于单独理解和测试。
 
 /// 露点温度（°C），Magnus 公式。
+///
+/// `libm::logf`：no_std 环境下没有标准库的浮点 log，用 libm crate。
 pub fn dew_point(temp_c: f32, rh_percent: f32) -> f32 {
+    // clamp 限制相对湿度范围，避免 log(0)
     let rh = (rh_percent / 100.0).clamp(0.0001, 1.0);
     let gamma = (17.62 * temp_c) / (243.12 + temp_c) + libm::logf(rh);
     (243.12 * gamma) / (17.62 - gamma)
 }
 
+/// 根据温湿度返回中文舒适度标签（`'static str` 编译期字符串，零堆分配）。
 pub fn comfort_label(temp: f32, hum: f32) -> &'static str {
     if temp > 30.0 && hum > 70.0 {
         "闷热"

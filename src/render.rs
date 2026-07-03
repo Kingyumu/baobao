@@ -1,3 +1,13 @@
+//! 脏矩形渲染缓存 — 只重绘变化的 UI 区域，降低 SPI 刷屏开销。
+//!
+//! ## 思路
+//! 比较当前 [`SystemState`] 与上一帧缓存的字段；仅当时钟/天气/WiFi 等变化时
+//! 调用对应 `draw_*`，否则跳过。换页或夜间主题切换时 `invalidate()` 全量重绘。
+//!
+//! ## Rust 要点
+//! - `heapless::String<N>` 存上一帧字符串，用于 cheap 相等性比较
+//! - `Option<f32>` 区分「无室外天气」与「有数据」两种 UI 状态
+
 use crate::display::{
     draw_alert_banner, draw_clock, draw_compare_page, draw_date, draw_detail_page,
     draw_page_indicator, draw_rain_overlay, draw_weather_panel, draw_wifi_icon, face_color,
@@ -12,6 +22,7 @@ use embedded_graphics::{
     text::Text,
 };
 
+/// 屏幕各区域的像素范围 (x, y, w, h)，用于局部 `fill_rect` 清背景。
 const CLOCK_REGION: (u16, u16, u16, u16) = (0, 0, 300, 265);
 const WEATHER_REGION: (u16, u16, u16, u16) = (300, 0, 175, 235);
 const FACE_REGION: (u16, u16, u16, u16) = (375, 210, 40, 50);
@@ -26,6 +37,7 @@ fn f32_changed(a: f32, b: f32) -> bool {
     (a - b).abs() > 0.05
 }
 
+/// 上一帧快照；`ready=false` 表示需要全量布局重绘。
 pub struct RenderCache {
     ready: bool,
     page: DisplayPage,
@@ -73,10 +85,12 @@ impl RenderCache {
         }
     }
 
+    /// 强制下一帧全量重绘（换页、WiFi 重连、预警等事件后调用）。
     pub fn invalidate(&mut self) {
         self.ready = false;
     }
 
+    /// 主渲染入口：根据页面与脏区标志决定全量/增量绘制。
     pub fn update(
         &mut self,
         display: &mut Ili9488Display,

@@ -3,6 +3,21 @@
 #![allow(linker_messages)]
 
 //! 桌面天气站主程序 — Raspberry Pi Pico 2 W (RP2350)
+//!
+//! ## 程序结构
+//! 1. 初始化硬件（I2C / SPI 屏 / WiFi / Flash）
+//! 2. 尝试连接已记住的 WiFi；失败则进入 [`provisioning`] 配网（此阶段不启动 BLE）
+//! 3. 进入主循环：读传感器 → 更新状态 → 按需联网 → 刷新屏幕
+//!
+//! ## Rust / Embassy 实战要点
+//! - `#![no_std]`：不用标准库，适合 MCU；需要堆时用 `extern crate alloc`
+//! - `#![no_main]`：入口由 `#[embassy_executor::main]` 宏生成，不是普通 `fn main()`
+//! - `async/await`：等待 I2C、WiFi、定时器时不阻塞 CPU，Embassy 协作式调度
+//! - `'static`：spawn 出去的任务、GPIO 引脚要求「整个程序生命周期有效」
+//! - [`StaticCell`]：在运行时安全地给 `static` 变量做**一次性**初始化
+//! - [`Mutex`] + `.lock().await`：BME280 与 DS3231 共用 I2C 时的异步互斥锁
+//! - [`Option`] / [`match`]：Rust 用类型系统表达「可能有值」，避免空指针
+//! - `-> !`（如 [`wifi_store::sys_reset`]）：表示函数永不返回
 
 extern crate alloc;
 
@@ -45,8 +60,10 @@ use trouble_host::prelude::ExternalController;
 use panic_probe as _;
 
 #[global_allocator]
+// 堆分配器：供 alloc::format! 等少量动态内存使用（131072 = 128 KiB）
 static HEAP: embedded_alloc::LlffHeap = embedded_alloc::LlffHeap::empty();
 
+/// 长按触摸时播放爱心动画（局部重绘，不整屏刷新）。
 async fn show_touch_heart(display: &mut Ili9488Display, hour: u8) {
     let bg = theme_for_hour(hour).bg;
     let mut heart = Face::new(FaceType::Heart);
@@ -58,6 +75,7 @@ async fn show_touch_heart(display: &mut Ili9488Display, hour: u8) {
     }
 }
 
+/// 纪念日/生日：蜂鸣旋律 + 全屏提示 + 爱心动画，每天只触发一次（由 state 去重）。
 async fn handle_special_event(
     display: &mut Ili9488Display,
     buzzer: &mut Output<'static>,
@@ -84,6 +102,7 @@ async fn handle_special_event(
     cache.invalidate();
 }
 
+/// BLE 协议栈独立任务：与主循环并行，通过 [`ble::publish_snapshot`] 读传感器快照。
 #[embassy_executor::task]
 async fn ble_host_task(bt_device: cyw43::bluetooth::BtDriver<'static>) {
     let controller: ExternalController<_, 10> = ExternalController::new(bt_device);
@@ -92,6 +111,7 @@ async fn ble_host_task(bt_device: cyw43::bluetooth::BtDriver<'static>) {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    // 初始化堆：MaybeUninit 避免在 const 上下文要求未初始化数组为 0
     {
         use core::mem::MaybeUninit;
         static mut HEAP_MEM: [MaybeUninit<u8>; 131072] = [MaybeUninit::uninit(); 131072];
@@ -104,10 +124,12 @@ async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     info!("桌面天气站启动中...");
 
+    // I2C 总线用 Mutex 包装：多个 async 调用方串行访问，避免并发读写冲突
     let i2c = i2c::I2c::new_async(p.I2C0, p.PIN_1, p.PIN_0, I2cIrqs, I2cConfig::default());
     static I2C_BUS: StaticCell<I2cBus> = StaticCell::new();
     let bus = I2C_BUS.init(Mutex::new(i2c));
 
+    // SPI 屏用 blocking 模式：draw 在主循环里同步刷像素，实现简单
     let spi = Spi::new_blocking(p.SPI1, p.PIN_10, p.PIN_11, p.PIN_12, SpiConfig::default());
     let dc = Output::new(p.PIN_8, Level::Low);
     let cs = Output::new(p.PIN_9, Level::Low);
@@ -158,6 +180,7 @@ async fn main(spawner: Spawner) {
 
     let wifi_connected = connect_wifi(&mut wifi_control, stack, &mut flash).await;
 
+    // 全部记住的网络都连不上 → 开热点配网；`run` 成功后会 reboot，正常不会返回
     if !wifi_connected {
         provisioning::run(
             &mut display,
@@ -170,6 +193,7 @@ async fn main(spawner: Spawner) {
         .await;
     }
 
+    // 仅联网成功后才启动 BLE，配网阶段关闭蓝牙以降低复杂度
     if config::BLE_ENABLED {
         if let Some(bt) = bt_device {
             spawner.spawn(ble_host_task(bt).unwrap());
@@ -207,6 +231,7 @@ async fn main(spawner: Spawner) {
     Timer::after_millis(50).await;
     beep(&mut buzzer, 100).await;
 
+    // 触摸状态机：短按切页 / 2s 长按爱心 / 5s 长按清除 WiFi 并重启
     let mut touch_pressed = false;
     let mut touch_down: Option<Instant> = None;
     let mut touch_long_done = false;
@@ -218,6 +243,7 @@ async fn main(spawner: Spawner) {
     loop {
         let loop_start = embassy_time::Instant::now().as_secs();
 
+        // 链路断开时按间隔重连，会依次尝试 Flash 里记住的全部 WiFi
         let link_up = stack.is_config_up();
         state.wifi_connected = link_up;
         if !link_up {

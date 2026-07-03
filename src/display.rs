@@ -1,3 +1,15 @@
+//! ILI9488 480×320 TFT 驱动与 UI 绘制。
+//!
+//! ## 模块结构
+//! - [`Ili9488Display`]：SPI 命令/像素写入，实现 `DrawTarget` 供 embedded-graphics 使用
+//! - [`Face`] / [`FaceType`]：8×8 位图表情，2 帧动画
+//! - `draw_*`：时钟、天气面板、详情页、配网页等 UI 组件
+//!
+//! ## Rust 要点
+//! - `impl DrawTarget for Ili9488Display`：接入 embedded-graphics 生态（Text、Line 等）
+//! - `&'static [[u8;8];2]`：表情像素表放 flash，不占 RAM
+//! - `blocking_write`：显示刷新在主循环同步进行，与 async 传感器读取分离
+
 use crate::comfort::{comfort_label, dew_point};
 use crate::config;
 use crate::sensors::DateTime;
@@ -26,6 +38,7 @@ pub struct Theme {
     pub is_night: bool,
 }
 
+/// 根据当前小时返回日/夜配色主题。
 pub fn theme_for_hour(hour: u8) -> Theme {
     if hour >= config::NIGHT_START_HOUR || hour < config::NIGHT_END_HOUR {
         Theme {
@@ -48,6 +61,7 @@ pub fn theme_for_hour(hour: u8) -> Theme {
     }
 }
 
+/// ILI9488 显示驱动（SPI + DC/CS 引脚）。
 pub struct Ili9488Display {
     spi: Spi<'static, SPI1, SpiBlocking>,
     dc: Output<'static>,
@@ -184,6 +198,8 @@ impl OriginDimensions for Ili9488Display {
     }
 }
 
+// --- 8×8 位图表情（每表情 2 帧） ---
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FaceType {
     Happy,
@@ -307,6 +323,7 @@ const LOADING: [[u8; 8]; 2] = [
     [0x04, 0x04, 0x04, 0x18, 0x18, 0x20, 0x20, 0x20],
 ];
 
+/// 根据温湿度/天气码/气压趋势选择右下角表情。
 pub fn select_face(
     temp: f32,
     code: &str,
@@ -443,6 +460,8 @@ fn hand_end(cx: i32, cy: i32, len: i32, idx: usize) -> Point {
 const CX: i32 = 150;
 const CY: i32 = 145;
 const CR: i32 = 120;
+
+// --- 主界面 UI 组件 ---
 
 pub fn draw_clock(d: &mut Ili9488Display, t: &DateTime, theme: &Theme) {
     Circle::new(Point::new(CX - CR, CY - CR), (CR * 2) as u32)
@@ -861,6 +880,8 @@ pub fn draw_alert_banner(d: &mut Ili9488Display, _theme: &Theme) {
         .draw(d)
         .ok();
 }
+
+// --- 配网专用全屏页 ---
 
 pub fn draw_provisioning_screen(d: &mut Ili9488Display) {
     d.clear(Rgb565::new(0, 0, 40));

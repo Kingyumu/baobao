@@ -1,4 +1,15 @@
 //! SoftAP + DHCP + 简易 HTTP 配网页面。
+//!
+//! ## 流程
+//! 1. 开热点 `BaobaoWeather-Setup`，设备 IP `192.168.4.1`
+//! 2. 手机连热点 → DHCP 分配地址 → 浏览器打开配网页
+//! 3. POST `/save` 提交 SSID/密码 → 验证能连上 → 写入 Flash → 重启
+//!
+//! ## Rust 要点
+//! - `-> !`：配网主循环 [`run`] 永不正常返回（成功则 `sys_reset`）
+//! - 栈上 `[u8; 2048]` 缓冲 HTTP 请求，避免堆分配
+//! - `const fn` 拼接的 `FORM_HTML`：HTTP 头+正文编译期生成，零运行时开销
+//! - Captive Portal：手机探测 `/generate_204` 等路径时 302 跳到配网页
 
 use crate::config;
 use crate::display::{draw_provisioning_screen, draw_provisioning_success};
@@ -20,6 +31,7 @@ use heapless::String;
 
 const HTTP_PORT: u16 = 80;
 
+/// 后台 DHCP 任务：给连热点的手机分配 192.168.4.10–50。
 #[embassy_executor::task]
 async fn dhcp_server_task(stack: Stack<'static>) {
     let gateway = Ipv4Addr::new(
@@ -45,6 +57,7 @@ async fn dhcp_server_task(stack: Stack<'static>) {
     let _ = run_dhcp_server(stack, config, &mut leaser).await;
 }
 
+/// 配网模式主循环：监听 TCP 80，解析简易 HTTP，成功后重启。
 pub async fn run(
     display: &mut Ili9488Display,
     control: &mut Control<'static>,
@@ -119,6 +132,7 @@ pub async fn run(
     }
 }
 
+/// 关 AP → 连 STA → 成功则 [`wifi_store::remember`]。
 async fn try_save_and_connect(
     control: &mut Control<'static>,
     stack: Stack<'static>,
@@ -152,6 +166,7 @@ fn request_path(req: &[u8]) -> &str {
     text.split_whitespace().nth(1).unwrap_or("/")
 }
 
+/// iOS/Android/Windows 连 WiFi 后会请求这些 URL 检测能否上网。
 fn is_captive_probe(path: &str) -> bool {
     matches!(
         path,

@@ -1,6 +1,18 @@
+//! 应用状态机 — 传感器读数、页面、闹钟、气压趋势等业务逻辑。
+//!
+//! 与 UI（display/render）和网络（network）解耦：主循环读硬件后更新 [`SystemState`]，
+//! 渲染层只读 state，不直接访问 I2C/WiFi。
+//!
+//! ## Rust 要点
+//! - `enum`：用类型表达有限状态（页面、气压趋势），比魔法字符串安全
+//! - `impl Enum { fn next(self) -> Self }`：`self` 按值传递，状态转换返回新枚举
+//! - 环形缓冲区：`(idx + 1) % N` 实现固定长度历史，无 Vec 分配
+//! - `Option<(u8,u8)>`：记录「某天是否已响铃」，避免同一天重复触发
+
 use crate::config;
 use crate::sensors::DateTime;
 
+/// 根据最近 10 次气压采样比较前/后半段均值。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PressureTrend {
     Rising,
@@ -8,6 +20,7 @@ pub enum PressureTrend {
     Falling,
 }
 
+/// 触摸屏短按循环切换的三页 UI。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DisplayPage {
     Main,
@@ -33,6 +46,7 @@ impl DisplayPage {
     }
 }
 
+/// 从中国天气网 HTTP 接口解析出的室外数据。
 #[derive(Debug, Clone)]
 pub struct NetworkWeather {
     pub temp: f32,
@@ -41,6 +55,7 @@ pub struct NetworkWeather {
     pub weather_code: heapless::String<8>,
 }
 
+/// 全局运行时状态（单线程主循环独占 `&mut`，无需 Arc/Mutex）。
 pub struct SystemState {
     pub temperature: f32,
     pub humidity: f32,
@@ -55,7 +70,7 @@ pub struct SystemState {
     pub network_weather: Option<NetworkWeather>,
     pub animation_counter: u32,
     pub special_event: Option<&'static str>,
-    pub special_event_handled: Option<(u8, u8)>,
+    special_event_handled: Option<(u8, u8)>, // (month, day) 已处理标记
     pub last_weather_update: u64,
     pub last_ntp_sync: u64,
     pub display_page: DisplayPage,
@@ -104,6 +119,7 @@ impl SystemState {
         }
     }
 
+    /// 写入新气压并更新趋势（需凑满 10 点后才计算）。
     pub fn update_pressure(&mut self, p: f32) {
         self.pressure = p;
         self.pressure_history[self.pressure_idx] = p;
@@ -114,6 +130,7 @@ impl SystemState {
         if !self.pressure_filled {
             return;
         }
+        // 前 5 点 vs 后 5 点均值差
         let (old, new) = self.pressure_history[..10].iter().enumerate().fold(
             (0.0f32, 0.0f32),
             |(o, n), (i, &v)| {
@@ -182,6 +199,7 @@ impl SystemState {
         }
     }
 
+    /// 主界面图标：气压趋势可覆盖网络天气码。
     pub fn display_code(&self) -> &str {
         match self.pressure_trend {
             PressureTrend::Falling if self.pressure < 1000.0 => "trend_rain",
@@ -199,6 +217,7 @@ impl SystemState {
         self.display_page = self.display_page.next();
     }
 
+    /// 每分钟采样一次，写入气压曲线环形缓冲。
     pub fn sample_pressure_chart(&mut self, now: u64) {
         if now.saturating_sub(self.last_chart_sample) < config::PRESSURE_CHART_INTERVAL {
             return;
@@ -219,6 +238,7 @@ impl SystemState {
         }
     }
 
+    /// 按时间顺序取第 i 个点（处理环形缓冲区的起始偏移）。
     pub fn chart_value(&self, i: usize) -> f32 {
         let n = self.chart_count();
         if n == 0 {
@@ -232,6 +252,7 @@ impl SystemState {
         self.pressure_chart[(start + i) % config::PRESSURE_CHART_LEN]
     }
 
+    /// 气压骤降且绝对值偏低时触发变天预警（带冷却时间）。
     pub fn check_weather_alert(&mut self, now: u64) -> bool {
         if self.weather_alert_active {
             return false;
@@ -264,6 +285,7 @@ impl SystemState {
         self.weather_alert_active
     }
 
+    /// 整点报时：仅在 `:00` 的前 2 秒内触发一次。
     pub fn check_hourly_chime(&mut self, t: &DateTime) -> bool {
         if !config::HOURLY_CHIME_ENABLED {
             return false;
@@ -282,6 +304,7 @@ impl SystemState {
         true
     }
 
+    /// 软件闹钟：到点响一次，同一天不重复。
     pub fn check_alarm(&mut self, t: &DateTime) -> bool {
         if !config::ALARM_ENABLED {
             return false;

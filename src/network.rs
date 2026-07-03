@@ -1,3 +1,19 @@
+//! WiFi / NTP / HTTP 天气 — cyw43 + embassy-net。
+//!
+//! ## 模块职责
+//! - [`init_wifi`]：PIO-SPI 初始化 CYW43439，spawn 驱动与 net 任务
+//! - [`connect_wifi`] / [`connect_wifi_with`]：STA 连接与 DHCP
+//! - [`configure_ap_stack`] / [`start_ap`]：配网热点模式
+//! - [`sync_ntp`]：UDP NTP → 写 DS3231
+//! - [`fetch_weather`]：TCP HTTP 拉取中国天气网 JSON（手工解析，无 serde）
+//!
+//! ## Rust 要点
+//! - `#[embassy_executor::task]`：独立 async 任务，与 main 并发
+//! - `bind_interrupts!`：PIO/DMA 中断绑定
+//! - `StaticCell` + `'static`：WiFi 驱动状态必须活在整个程序周期
+//! - `select!`：NTP 收包与超时竞速，避免永久阻塞
+//! - `heapless::String` / 手工 split：no_std 下不用 JSON 库
+
 use crate::config;
 use crate::i2c_bus::I2cBus;
 use crate::wifi_store::{self, FLASH_SIZE};
@@ -32,6 +48,7 @@ static BTFW: Aligned<A4, [u8; 6164]> = Aligned({
     RAW
 });
 
+/// 初始化 CYW43 WiFi（可选 BLE 固件），返回控制面、网络栈、可选 BT 设备。
 pub async fn init_wifi(
     spawner: &Spawner,
     pio: Peri<'static, PIO0>,
@@ -102,12 +119,14 @@ pub async fn init_wifi(
     (control, stack, bt_device)
 }
 
+/// WiFi 连接失败原因（用于配网页展示与 defmt 日志）。
 #[derive(Debug, defmt::Format)]
 pub enum WifiConnectError {
     JoinFailed,
     DhcpTimeout,
 }
 
+/// 配网/AP 模式：静态 IP 192.168.4.1/24。
 pub fn configure_ap_stack(stack: embassy_net::Stack<'static>) {
     let ip = embassy_net::Ipv4Address::new(
         config::PROVISION_IP.0,
@@ -122,6 +141,7 @@ pub fn configure_ap_stack(stack: embassy_net::Stack<'static>) {
     }));
 }
 
+/// 正常联网模式：DHCP 向路由器要 IP。
 pub fn configure_sta_stack(stack: embassy_net::Stack<'static>) {
     stack.set_config_v4(embassy_net::ConfigV4::Dhcp(Default::default()));
 }
@@ -212,6 +232,7 @@ pub async fn connect_wifi(
     false
 }
 
+/// cyw43 后台任务：必须 spawn，否则 WiFi 硬件不工作。
 #[embassy_executor::task]
 async fn cyw43_task(
     runner: cyw43::Runner<
@@ -228,6 +249,7 @@ async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'sta
     runner.run().await;
 }
 
+/// UDP NTP 对时并写入 DS3231（东八区 +8h）。
 pub async fn sync_ntp(
     stack: embassy_net::Stack<'static>,
     rtc: &Ds3231,
@@ -363,6 +385,7 @@ fn is_leap_year(year: u16) -> bool {
     (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
+/// HTTP GET 中国天气网页面，手工提取 `observe24h_data` JSON 片段。
 pub async fn fetch_weather(stack: embassy_net::Stack<'static>) -> Option<NetworkWeather> {
     info!("获取网络天气...");
 

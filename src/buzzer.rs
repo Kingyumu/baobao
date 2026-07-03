@@ -1,6 +1,17 @@
+//! 无源蜂鸣器驱动 — GPIO 方波发声。
+//!
+//! ## 硬件说明
+//! 无源蜂鸣器需要一定频率的方波才能发声；有源蜂鸣器只需高电平。
+//! 本实现用 [`Timer::after`]  bit-bang 产生方波（占空比约 50%）。
+//!
+//! ## Rust 要点
+//! - `&[(u32, u32)]`：旋律表放 `.rodata`，`(频率 Hz, 时长 ms)`，`freq=0` 表示休止
+//! - `async fn`：每个音符之间 `.await`，不阻塞其他 Embassy 任务
+
 use embassy_rp::gpio::Output;
 use embassy_time::{Duration, Timer};
 
+/// 生日快乐（简谱频率表）
 pub const BIRTHDAY_SONG: [(u32, u32); 25] = [
     (262, 400), (262, 400), (294, 800), (262, 800), (349, 800), (330, 1600),
     (262, 400), (262, 400), (294, 800), (262, 800), (392, 800), (349, 1600),
@@ -28,10 +39,12 @@ pub const ANNIVERSARY_MELODY: [(u32, u32); 8] = [
     (587, 400), (494, 400), (392, 800), (0, 200),
 ];
 
+/// 闹钟：三声短促高音
 pub const ALARM_MELODY: [(u32, u32); 6] = [
     (880, 300), (0, 100), (880, 300), (0, 100), (880, 300), (0, 300),
 ];
 
+/// 根据纪念日文案关键字选择旋律（简单字符串包含判断）。
 pub fn melody_for_event(message: &str) -> &'static [(u32, u32)] {
     if message.contains("生日") {
         &BIRTHDAY_SONG
@@ -46,12 +59,14 @@ pub fn melody_for_event(message: &str) -> &'static [(u32, u32)] {
     }
 }
 
+/// 单次蜂鸣（固定频率的「嘀」一声，不扫频）。
 pub async fn beep(pin: &mut Output<'static>, ms: u64) {
     pin.set_high();
     Timer::after(Duration::from_millis(ms)).await;
     pin.set_low();
 }
 
+/// 按音符表播放：每个频率用半周期翻转 GPIO 形成方波。
 pub async fn melody(pin: &mut Output<'static>, notes: &[(u32, u32)]) {
     for &(freq, dur) in notes {
         if freq > 0 {
@@ -69,12 +84,14 @@ pub async fn melody(pin: &mut Output<'static>, notes: &[(u32, u32)]) {
     }
 }
 
+/// 整点报时：两声不同长度的「叮」
 pub async fn hourly_chime(pin: &mut Output<'static>) {
     beep(pin, 40).await;
     Timer::after(Duration::from_millis(80)).await;
     beep(pin, 60).await;
 }
 
+/// 变天预警：三声提示
 pub async fn alert_beep(pin: &mut Output<'static>) {
     for _ in 0..3 {
         beep(pin, 80).await;

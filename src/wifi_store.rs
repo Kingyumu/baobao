@@ -1,4 +1,15 @@
 //! WiFi 凭据 Flash 持久化（最后一扇区 4KB，最多记住 5 个网络，最近使用的优先）。
+//!
+//! ## 存储布局
+//! Flash 最后一扇区（4 KiB）存 [`WifiStoreRaw`]：magic + count + 最多 5 条 [`WifiEntryRaw`]。
+//! `MAGIC = 0x5746_4D32`（"WFM2"）用于识别有效数据。
+//!
+//! ## Rust 要点
+//! - `#[repr(C)]`：保证与 C 结构体内存布局一致，便于按字节写入 Flash
+//! - `read_volatile`：从内存映射 Flash 地址直接读，避免编译器优化掉「重复读」
+//! - `heapless::String<N>` / `Vec<T, N>`：固定容量容器，no_std 下替代 `String`/`Vec`
+//! - `Option<T>` + `?` 运算符：链式错误/空值传播，比嵌套 if 更清晰
+//! - 擦除扇区再整页写入：Flash 只能 1→0，不能随意改单个字节
 
 use crate::config;
 use defmt::*;
@@ -11,6 +22,7 @@ const STORE_OFFSET: u32 = (FLASH_SIZE - ERASE_SIZE) as u32;
 const MAGIC: u32 = 0x5746_4D32; // "WFM2"
 pub const MAX_NETWORKS: usize = 5;
 
+/// Flash 中单条 WiFi 的原始二进制布局（定长字段，便于 `repr(C)`）。
 #[repr(C)]
 #[derive(Copy, Clone)]
 struct WifiEntryRaw {
@@ -21,6 +33,7 @@ struct WifiEntryRaw {
     password: [u8; 64],
 }
 
+/// 整个存储扇区的头部 + 条目数组。
 #[repr(C)]
 struct WifiStoreRaw {
     magic: u32,
@@ -29,6 +42,7 @@ struct WifiStoreRaw {
     entries: [WifiEntryRaw; MAX_NETWORKS],
 }
 
+/// 运行时使用的 WiFi 凭据（堆叠在 heapless 容器里，带 UTF-8 验证）。
 #[derive(Clone)]
 pub struct WifiCredentials {
     pub ssid: String<32>,
@@ -45,6 +59,7 @@ impl WifiCredentials {
     }
 }
 
+/// 从 Flash 映射地址直接读取结构体（unsafe：调用方需保证地址有效）。
 fn read_raw() -> WifiStoreRaw {
     let ptr = (FLASH_BASE as u32 + STORE_OFFSET) as *const WifiStoreRaw;
     unsafe { core::ptr::read_volatile(ptr) }
@@ -98,7 +113,7 @@ fn load_from_flash() -> Vec<WifiCredentials, MAX_NETWORKS> {
     list
 }
 
-/// 开发用默认凭据（config 里填了真实 SSID 时生效）。
+/// 开发用默认凭据（config 里仍是占位符时不生效）。
 pub fn factory_credentials() -> Option<WifiCredentials> {
     if config::WIFI_SSID == "你的WiFi名称" {
         return None;
@@ -110,7 +125,7 @@ pub fn factory_credentials() -> Option<WifiCredentials> {
     Some(WifiCredentials { ssid, password })
 }
 
-/// 返回已保存的全部 WiFi（最近使用的在前）。
+/// 返回已保存的全部 WiFi（索引 0 = 最近成功连接的网络）。
 pub fn all_credentials() -> Vec<WifiCredentials, MAX_NETWORKS> {
     let list = load_from_flash();
     if list.is_empty() {
@@ -153,7 +168,9 @@ fn write_store(
     Ok(())
 }
 
-/// 记住一条 WiFi：同 SSID 更新密码并置顶，新 SSID 插入队首，超出容量丢弃最旧的。
+/// 记住一条 WiFi（MRU 策略）：
+/// - 同 SSID：更新密码并移到队首
+/// - 新 SSID：插入队首；超过 [`MAX_NETWORKS`] 时 `pop()` 丢弃队尾（最久未用）
 pub fn remember(
     flash: &mut Flash<'_, embassy_rp::peripherals::FLASH, Blocking, FLASH_SIZE>,
     creds: &WifiCredentials,
@@ -169,6 +186,7 @@ pub fn remember(
     Ok(())
 }
 
+/// 擦除整个 WiFi 扇区（长按 5 秒触发）。
 pub fn clear(
     flash: &mut Flash<'_, embassy_rp::peripherals::FLASH, Blocking, FLASH_SIZE>,
 ) -> Result<(), Error> {
@@ -177,6 +195,7 @@ pub fn clear(
     Ok(())
 }
 
+/// 软件复位 MCU；返回类型 `!` 表示永不返回。
 pub fn sys_reset() -> ! {
     info!("设备重启...");
     cortex_m::peripheral::SCB::sys_reset()

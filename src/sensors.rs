@@ -1,9 +1,21 @@
+//! I2C 传感器驱动 — BME280（温湿度气压）与 DS3231（RTC）。
+//!
+//! ## 通信模式
+//! 所有方法通过 [`I2cBus`]（Mutex 包装的 async I2C）访问硬件：
+//! `bus.lock().await` 获取独占访问权后再 `write` / `write_read`。
+//!
+//! ## Rust 要点
+//! - `embedded_hal_async::i2c::I2c` trait：抽象 I2C 读写，与具体 HAL 解耦
+//! - `Option<Calib>`：校准系数读一次后缓存，避免每次测量都读寄存器
+//! - `Result<T, E>`：I2C 失败时返回 [`i2c::Error`]，调用方用 `match` 处理
+
 use crate::i2c_bus::I2cBus;
 use defmt::*;
 use embassy_rp::i2c;
 use embassy_time::{Duration, Timer};
 use embedded_hal_async::i2c::I2c;
 
+/// 统一的时间结构（与 DS3231 寄存器字段对应）。
 #[derive(Debug, Clone, Copy)]
 pub struct DateTime {
     pub year: u16,
@@ -15,12 +27,14 @@ pub struct DateTime {
     pub weekday: u8,
 }
 
+/// 单次 BME280 测量结果。
 pub struct Measurements {
     pub temperature: f32,
     pub pressure: f32,
     pub humidity: f32,
 }
 
+/// Bosch 数据手册中的补偿参数（从芯片 OTP 读出）。
 struct Calib {
     t1: u16,
     t2: i16,
@@ -40,7 +54,7 @@ struct Calib {
     h4: i16,
     h5: i16,
     h6: i8,
-    t_fine: i32,
+    t_fine: i32, // 温度补偿中间值，湿度补偿会用到
 }
 
 pub struct Bme280 {
@@ -51,7 +65,7 @@ pub struct Bme280 {
 impl Bme280 {
     pub fn new() -> Self {
         Self {
-            addr: 0x76,
+            addr: 0x76, // SDO 接 GND；接 VCC 时为 0x77
             cal: None,
         }
     }
@@ -64,16 +78,18 @@ impl Bme280 {
         bus.lock().await.write(self.addr, &[reg, val]).await
     }
 
+    /// 软复位 → 读校准系数 → 配置 oversampling 与 standby。
     pub async fn init(&mut self, bus: &I2cBus) -> Result<(), i2c::Error> {
         let mut id = [0u8];
         self.read_regs(bus, 0xD0, &mut id).await?;
         info!("BME280 芯片ID: 0x{:02X}", id[0]);
-        self.write_reg(bus, 0xE0, 0xB6).await?;
+        self.write_reg(bus, 0xE0, 0xB6).await?; // soft reset
         Timer::after(Duration::from_millis(10)).await;
         let mut pt = [0u8; 26];
         self.read_regs(bus, 0x88, &mut pt).await?;
         let mut h = [0u8; 7];
         self.read_regs(bus, 0xE1, &mut h).await?;
+        // 小端序拼接 16 位校准寄存器
         self.cal = Some(Calib {
             t1: u16::from_le_bytes([pt[0], pt[1]]),
             t2: i16::from_le_bytes([pt[2], pt[3]]),
@@ -95,18 +111,20 @@ impl Bme280 {
             h6: h[6] as i8,
             t_fine: 0,
         });
-        self.write_reg(bus, 0xF2, 0x01).await?;
-        self.write_reg(bus, 0xF4, 0x27).await?;
-        self.write_reg(bus, 0xF5, 0xA0).await?;
+        self.write_reg(bus, 0xF2, 0x01).await?; // humidity oversampling x1
+        self.write_reg(bus, 0xF4, 0x27).await?; // temp x1, pressure x1, normal mode
+        self.write_reg(bus, 0xF5, 0xA0).await?; // standby 1000ms, filter off
         Ok(())
     }
 
+    /// 触发 forced 模式测量，等待后读原始 ADC 并补偿。
     pub async fn measure(&mut self, bus: &I2cBus) -> Result<Measurements, i2c::Error> {
-        self.write_reg(bus, 0xF4, 0x25).await?;
+        self.write_reg(bus, 0xF4, 0x25).await?; // forced mode
         Timer::after(Duration::from_millis(50)).await;
         let mut data = [0u8; 8];
         self.read_regs(bus, 0xF7, &mut data).await?;
         let cal = self.cal.as_mut().unwrap();
+        // 20 位 ADC 原始值（数据手册位域拼接）
         let raw_p =
             ((data[0] as u32) << 12) | ((data[1] as u32) << 4) | ((data[2] as u32) >> 4);
         let raw_t =
@@ -122,6 +140,7 @@ impl Bme280 {
         })
     }
 
+    /// 温度补偿（官方公式，会更新 cal.t_fine 供湿度用）。
     fn comp_t(raw: u32, c: &mut Calib) -> f32 {
         let v1 = (raw as f32 / 16384.0 - c.t1 as f32 / 1024.0) * c.t2 as f32;
         let v2 = raw as f32 / 131072.0 - c.t1 as f32 / 8192.0;
@@ -171,13 +190,14 @@ impl Ds3231 {
         Self { addr: 0x68 }
     }
 
+    /// 从 0x00 起连续读 7 字节时间寄存器，BCD → 十进制。
     pub async fn get_time(&self, bus: &I2cBus) -> Result<DateTime, i2c::Error> {
         let mut d = [0u8; 7];
         bus.lock().await.write_read(self.addr, &[0x00], &mut d).await?;
         Ok(DateTime {
             second: Self::bcd(d[0]),
             minute: Self::bcd(d[1]),
-            hour: Self::bcd(d[2] & 0x3F),
+            hour: Self::bcd(d[2] & 0x3F), // 24h 模式
             weekday: d[3] & 0x07,
             day: Self::bcd(d[4]),
             month: Self::bcd(d[5] & 0x1F),
@@ -185,6 +205,7 @@ impl Ds3231 {
         })
     }
 
+    /// NTP 同步后写回 RTC（首字节 0x00 为起始寄存器地址）。
     pub async fn set_time(&self, bus: &I2cBus, dt: &DateTime) -> Result<(), i2c::Error> {
         bus.lock().await.write(
             self.addr,
