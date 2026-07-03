@@ -8,8 +8,7 @@ use heapless::Vec;
 
 pub const FLASH_SIZE: usize = 4096 * 1024;
 const STORE_OFFSET: u32 = (FLASH_SIZE - ERASE_SIZE) as u32;
-const MAGIC_V1: u32 = 0x5749_4649; // "WIFI" — 旧版单条
-const MAGIC_V2: u32 = 0x5746_4D32; // "WFM2" — 多网络
+const MAGIC: u32 = 0x5746_4D32; // "WFM2"
 pub const MAX_NETWORKS: usize = 5;
 
 #[repr(C)]
@@ -23,17 +22,7 @@ struct WifiEntryRaw {
 }
 
 #[repr(C)]
-struct WifiStoreRawV1 {
-    magic: u32,
-    ssid_len: u8,
-    pass_len: u8,
-    _pad: [u8; 2],
-    ssid: [u8; 32],
-    password: [u8; 64],
-}
-
-#[repr(C)]
-struct WifiStoreRawV2 {
+struct WifiStoreRaw {
     magic: u32,
     count: u8,
     _pad: [u8; 3],
@@ -56,13 +45,8 @@ impl WifiCredentials {
     }
 }
 
-fn read_v1() -> WifiStoreRawV1 {
-    let ptr = (FLASH_BASE as u32 + STORE_OFFSET) as *const WifiStoreRawV1;
-    unsafe { core::ptr::read_volatile(ptr) }
-}
-
-fn read_v2() -> WifiStoreRawV2 {
-    let ptr = (FLASH_BASE as u32 + STORE_OFFSET) as *const WifiStoreRawV2;
+fn read_raw() -> WifiStoreRaw {
+    let ptr = (FLASH_BASE as u32 + STORE_OFFSET) as *const WifiStoreRaw;
     unsafe { core::ptr::read_volatile(ptr) }
 }
 
@@ -101,24 +85,13 @@ fn creds_to_entry_raw(creds: &WifiCredentials) -> Result<WifiEntryRaw, Error> {
 
 fn load_from_flash() -> Vec<WifiCredentials, MAX_NETWORKS> {
     let mut list = Vec::new();
-    let magic = read_v2().magic;
-    if magic == MAGIC_V2 {
-        let raw = read_v2();
-        let count = (raw.count as usize).min(MAX_NETWORKS);
-        for entry in raw.entries.iter().take(count) {
-            if let Some(creds) = entry_raw_to_creds(entry) {
-                let _ = list.push(creds);
-            }
-        }
-    } else if magic == MAGIC_V1 {
-        let raw = read_v1();
-        if let Some(creds) = entry_raw_to_creds(&WifiEntryRaw {
-            ssid_len: raw.ssid_len,
-            pass_len: raw.pass_len,
-            _pad: raw._pad,
-            ssid: raw.ssid,
-            password: raw.password,
-        }) {
+    let raw = read_raw();
+    if raw.magic != MAGIC {
+        return list;
+    }
+    let count = (raw.count as usize).min(MAX_NETWORKS);
+    for entry in raw.entries.iter().take(count) {
+        if let Some(creds) = entry_raw_to_creds(entry) {
             let _ = list.push(creds);
         }
     }
@@ -154,8 +127,8 @@ fn write_store(
     flash: &mut Flash<'_, embassy_rp::peripherals::FLASH, Blocking, FLASH_SIZE>,
     entries: &Vec<WifiCredentials, MAX_NETWORKS>,
 ) -> Result<(), Error> {
-    let mut raw = WifiStoreRawV2 {
-        magic: MAGIC_V2,
+    let mut raw = WifiStoreRaw {
+        magic: MAGIC,
         count: entries.len() as u8,
         _pad: [0xFF; 3],
         entries: [WifiEntryRaw {
@@ -173,8 +146,8 @@ fn write_store(
     flash.blocking_erase(STORE_OFFSET, STORE_OFFSET + ERASE_SIZE as u32)?;
     flash.blocking_write(STORE_OFFSET, unsafe {
         core::slice::from_raw_parts(
-            &raw as *const WifiStoreRawV2 as *const u8,
-            core::mem::size_of::<WifiStoreRawV2>(),
+            &raw as *const WifiStoreRaw as *const u8,
+            core::mem::size_of::<WifiStoreRaw>(),
         )
     })?;
     Ok(())
